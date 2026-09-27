@@ -4520,8 +4520,15 @@ class CrispMindEditView extends TextFileView {
   }
 
   editNodeLink(id) {
+    const c = this.canvasController, sourceFile = this.file;
+    const originalText = c?.findNode(id)?.data.text;
+    if (!c || c.destroyed || c.options.readOnly || originalText == null) return;
     this.promptWikilink(link => {
-      const c = this.canvasController;
+      if (this.canvasController !== c || this.file !== sourceFile || c.destroyed ||
+          c.findNode(id)?.data.text !== originalText || c.options.readOnly || c.editor) {
+        new Notice("导图或节点状态已变化，请重新添加链接");
+        return;
+      }
       c.transact(() => {
         const node = c.findNode(id); if (!node) return false;
         const previous = normalizeMindLinkText(node.data.text, this.app.vault.getName());
@@ -4566,16 +4573,20 @@ class CrispMindEditView extends TextFileView {
   }
 
   async extractCurrentNodeToTopic() {
-    const selectedId = this.canvasController.selectedNodeId;
+    const controller = this.canvasController, sourceFile = this.file;
+    if (!controller || controller.destroyed || controller.options.readOnly || this.readOnly || !sourceFile) return;
+    controller.commitEditor?.();
+    const selectedId = controller.selectedNodeId;
     if (!selectedId) {
       new Notice("请先选中要提炼的分支节点");
       return;
     }
-    const node = this.canvasController.findNode(selectedId);
+    const node = controller.findNode(selectedId);
     if (!node) return;
+    const snapshot = JSON.stringify(cleanMindData(node));
 
     const { title, content } = extractNodeToTopicContent(node);
-    const folder = this.file?.parent?.path || "";
+    const folder = sourceFile.parent?.path || "";
     const safeTitle = title.replace(/[\\/:*?"<>|#^\[\]\r\n]/g, " ").trim().slice(0, 120) || "未命名主题";
     const prefix = folder && folder !== "/" ? `${folder}/` : "";
     let targetPath = `${prefix}${safeTitle}.md`, suffix = 2;
@@ -4583,9 +4594,17 @@ class CrispMindEditView extends TextFileView {
 
     try {
       const file = await this.app.vault.create(targetPath, content);
-      node.data.text = this.app.fileManager.generateMarkdownLink(file, this.file.path);
-      this.canvasController.render();
-      this.canvasController.saveState();
+      // Undo replaces node objects; resolve the current node only after I/O finishes.
+      const current = controller.findNode(selectedId);
+      if (this.canvasController !== controller || this.file !== sourceFile || controller.destroyed ||
+          this.readOnly || controller.options.readOnly || controller.editor || !current ||
+          JSON.stringify(cleanMindData(current)) !== snapshot) {
+        new Notice(`笔记已创建：${targetPath}；原导图或节点状态已变化，未替换节点`, 8000);
+        return;
+      }
+      controller.transact(() => {
+        current.data.text = this.app.fileManager.generateMarkdownLink(file, sourceFile.path);
+      });
       new Notice(`已成功提炼并沉淀为笔记：${targetPath}`);
     } catch (e) {
       new Notice(`提炼失败：${e.message}`);
