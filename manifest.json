@@ -1,7 +1,7 @@
 {
   "id": "crisp-mind",
   "name": "Crisp Mind",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "minAppVersion": "1.6.0",
   "description": "Your thought graphs, natively woven. Local-first, Obsidian-native mind mapping engine with bi-directional Markdown and knowledge graph integration.",
   "author": "letschips",

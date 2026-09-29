@@ -705,6 +705,20 @@ const MIND_GEOMETRY_KEYS = new Set([
   "_isUpper", "_spineConnectX", "_spineConnectY",
   "_boneTipX", "_boneTipY", "_boneConnectX", "_boneConnectY"
 ]);
+const FISHBONE_GEOMETRY_KEYS = [
+  "_isUpper", "_spineConnectX", "_spineConnectY",
+  "_boneTipX", "_boneTipY", "_boneConnectX", "_boneConnectY"
+];
+// Per-file snapshot retention. Matches the number of rows the recovery dialog can list.
+const MIND_SNAPSHOT_LIMIT = 30;
+function snapshotSourceKey(sourcePath) {
+  let hash = 0x811c9dc5;
+  for (const char of String(sourcePath || "")) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
 function cleanMindData(data) {
   return JSON.parse(JSON.stringify(data, (key, value) => MIND_GEOMETRY_KEYS.has(key) ? undefined : value));
 }
@@ -1319,6 +1333,8 @@ function getComputedThemeConfig(themeName = "crisp-obsidian") {
   return {
     name: "crisp-obsidian",
     backgroundColor: isTranslucent ? "transparent" : bgPrimary,
+    // Exports need an opaque fill even when the window itself is translucent.
+    solidBackground: bgPrimary,
     nodeBackground: bgSecondary,
     accentColor: accent,
     textColor: textNormal,
@@ -2161,7 +2177,14 @@ class CrispMindCanvas {
 
     const root = this.layoutRoot();
     const children = n => this.isNodeExpanded(n) ? (n.children || []) : [];
-    const font = this.window?.getComputedStyle && this.container?.ownerDocument ? this.window.getComputedStyle(this.container).fontFamily : "sans-serif";
+    // Fishbone anchors are only written for bones and their direct children. A node moved
+    // deeper would otherwise keep its old spine anchor and draw a line across the map.
+    const clearFishboneAnchors = n => {
+      for (const key of FISHBONE_GEOMETRY_KEYS) delete n[key];
+      (n.children || []).forEach(clearFishboneAnchors);
+    };
+    if (this.docData.root) clearFishboneAnchors(this.docData.root);
+    const font =this.window?.getComputedStyle && this.container?.ownerDocument ? this.window.getComputedStyle(this.container).fontFamily : "sans-serif";
     if (this.document?.createElement && !this.measureContext) {
       try { this.measureContext = this.document.createElement("canvas").getContext("2d"); } catch (_) {}
     }
@@ -2387,6 +2410,7 @@ class CrispMindCanvas {
     this.updateTransform();
 
     const root = this.layoutRoot();
+    this._layoutRootNode = root || null;
     this.linesGroup.innerHTML = "";
     this.boundaryGroup.innerHTML = "";
     this.relationsGroup.innerHTML = "";
@@ -2399,7 +2423,8 @@ class CrispMindCanvas {
       axisPath.setAttribute("stroke-linecap", "round");
       this.linesGroup.appendChild(axisPath);
 
-      for (const milestone of (root?.children || [])) {
+      // A collapsed root hides its milestones; their stale coordinates must not leave dots behind.
+      for (const milestone of (root && this.isNodeExpanded(root) ? root.children || [] : [])) {
         if (milestone._x == null) continue;
         const dot = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
         dot.setAttribute("cx", milestone._x + milestone._w / 2);
@@ -2445,6 +2470,9 @@ class CrispMindCanvas {
   renderBranch(node) {
     if (!node) return;
     const currentPresentationNodeId = this._currentPresentationNodeId;
+    // Branch focus lays the focused node out as the root, so compare against the layout root.
+    const layoutRootNode = this._layoutRootNode || this.docData.root;
+    const layoutRootId = layoutRootNode.id;
 
     // Connecting lines
     if (this.isNodeExpanded(node) && node.children && node.children.length > 0) {
@@ -2473,7 +2501,7 @@ class CrispMindCanvas {
           const sx = node._x + 20, sy = node._y + node._h;
           points = [{ x: sx, y: sy }, { x: sx, y: endY }, { x: child._x, y: endY }];
         } else if (this.layout === "timeline") {
-          if (node.id === this.docData.root.id) {
+          if (node.id === layoutRootId) {
             const axisY = this._timelineAxis ? this._timelineAxis.y : (node._y + node._h / 2);
             const midNodeX = child._x + child._w / 2;
             const childEdgeY = child._y > axisY ? child._y : (child._y + child._h);
@@ -2487,7 +2515,7 @@ class CrispMindCanvas {
             );
           }
         } else if (this.layout === "fishbone") {
-          if (node.id === this.docData.root.id) {
+          if (node.id === layoutRootId) {
             const boneEndX = child._x + child._w;
             const boneEndY = child._y + child._h / 2;
             const spineConnectX = child._spineConnectX || (boneEndX + 80);
@@ -2717,8 +2745,8 @@ class CrispMindCanvas {
       if (this.layout === "organizationStructure") {
         foldX = node._w / 2;
         foldY = node._h + 13;
-      } else if (this.layout === "mindMap" && node.id !== this.docData.root.id) {
-        const isLeftward = (node._x + node._w / 2) < (this.docData.root._x + this.docData.root._w / 2);
+      } else if (this.layout === "mindMap" && node.id !== layoutRootId) {
+        const isLeftward = (node._x + node._w / 2) < (layoutRootNode._x + layoutRootNode._w / 2);
         if (isLeftward) foldX = -13;
       } else if (this.layout === "fishbone") {
         foldX = -13;
@@ -3036,7 +3064,8 @@ class CrispMindCanvas {
   renderSummaries() {
     if (!this.annotationsGroup || !Array.isArray(this.docData.summaries)) return;
     const visible = new Set(this.visibleNodes().map(node => node.id));
-    const rootCenter = this.docData.root._x + this.docData.root._w / 2;
+    const centerRoot = this._layoutRootNode || this.docData.root;
+    const rootCenter = centerRoot._x + centerRoot._w / 2;
     for (const summary of this.docData.summaries) {
       const node = this.findNode(summary.nodeId);
       if (!node || !visible.has(node.id)) continue;
@@ -3378,7 +3407,8 @@ class CrispMindCanvas {
     });
 
     this.listen(this.container, "wheel", (e) => {
-      if (this.editor || e.target.closest?.("button, input, .crisp-mind-node-island, .crisp-mind-floating-toolbar")) return;
+      // Floating panels scroll their own content; only the bare canvas pans or zooms.
+      if (this.editor || e.target.closest?.("button, input, textarea, select, .crisp-mind-node-island, .crisp-mind-floating-toolbar, .crisp-mind-outline-panel, .crisp-mind-inspector, .crisp-mind-branch-bar, .crisp-mind-presentation-bar, .crisp-mind-license-banner")) return;
       e.preventDefault(); e.stopPropagation();
       if (!e.ctrlKey && !e.metaKey) {
         const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientHeight : 1;
@@ -3419,6 +3449,11 @@ class CrispMindCanvas {
       }
       if (e.isComposing || e.target.closest?.("input, textarea, select, button, [contenteditable=true]")) return;
       if (e.key === "Escape" && !this.drag) {
+        // With nothing selected, Esc steps back out of a focused branch to the whole map.
+        if (!this.selectedNodeIds.size && this.branchFocusId) {
+          this.clearBranchFocus();
+          return;
+        }
         this.setNodeSelection([], null);
         this.options.onDeselect?.();
         return;
@@ -3433,6 +3468,10 @@ class CrispMindCanvas {
         e.preventDefault(); e.stopPropagation(); void this.clipboardAction({c:"copy",x:"cut",v:"paste"}[e.key.toLowerCase()]); return;
       }
       if (e.key.startsWith("Arrow")) { e.preventDefault(); e.stopPropagation(); this.navigate(e.key); return; }
+      // Folding is a view operation and stays available in read-only preview.
+      if (this.selectedNodeId && e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault(); this.toggleCollapse(); return;
+      }
       if (!this.selectedNodeId || this.options.readOnly) return;
       if (e.key === "Tab") {
         e.preventDefault();
@@ -3441,8 +3480,6 @@ class CrispMindCanvas {
       } else if (e.key === "Enter") {
         e.preventDefault();
         this.addSiblingNode(this.selectedNodeId, true);
-      } else if (e.key.toLowerCase() === "f" && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault(); this.toggleCollapse();
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         if (this.selectedNodeIds.size > 1) this.deleteSelectedNodes();
@@ -3596,9 +3633,25 @@ class CrispMindEditView extends TextFileView {
       try { await adapter.mkdir(folder); } catch (error) { if (!(await adapter.exists(folder))) throw error; }
     }
     const createdAt = new Date().toISOString();
-    const path = `${folder}/${Date.now()}-${generateUid()}.json`;
+    const sourceKey = snapshotSourceKey(file.path);
+    const path = `${folder}/${Date.now()}-${sourceKey}-${generateUid()}.json`;
     await adapter.write(path, JSON.stringify({version:1, sourcePath:file.path, createdAt, reason, content}));
+    await this.pruneSnapshots(folder, sourceKey);
     return path;
+  }
+
+  // Keep only the newest snapshots of this file (the recovery list shows at most that many).
+  // Best effort: pruning never fails a save. Snapshots written before 1.5.2 carry no source key
+  // in their name and are left untouched.
+  async pruneSnapshots(folder, sourceKey) {
+    try {
+      const adapter = this.app.vault.adapter;
+      const pattern = new RegExp(`/\\d+-${sourceKey}-[^/]+\\.json$`);
+      const own = (await adapter.list(folder)).files.filter(path => pattern.test(path)).sort();
+      for (const path of own.slice(0, Math.max(0, own.length - MIND_SNAPSHOT_LIMIT))) {
+        try { await adapter.remove(path); } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   save() {
@@ -4191,7 +4244,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   showRelationMenu(relation, event) {
-    if (!this.requireLicense("关系编辑")) return;
+    if (this.readOnly || !this.requireLicense("关系编辑")) return;
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑关系标签").setIcon("pencil").onClick(() => {
       new CrispMindPromptModal(this.app, {
@@ -4206,7 +4259,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   showSummaryMenu(summary, event) {
-    if (!this.requireLicense("概要编辑")) return;
+    if (this.readOnly || !this.requireLicense("概要编辑")) return;
     const node = this.canvasController.findNode(summary.nodeId);
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑概要标签").setIcon("pencil").onClick(() => node && this.promptSummary(node, summary)));
@@ -4228,7 +4281,7 @@ class CrispMindEditView extends TextFileView {
       ["节点样式与备注", "工具栏检查器，或右键节点后选择"],
       ["大纲侧栏", "工具栏大纲按钮；可切换显示层级；点击节点定位，点击箭头折叠"],
       ["关系 / 边界 / 概要", "选中两个节点建立关系；右键节点添加边界或概要"],
-      ["搜索并聚焦分支", "工具栏搜索；聚焦后从顶部返回全图"],
+      ["搜索并聚焦分支", "工具栏搜索；聚焦后从顶部或按 Esc 返回全图"],
       ["播放导图演示", "工具栏演示；左右方向键切换，Esc 退出"],
       ["平移画布", "滚动或拖拽空白处"],
       ["缩放画布", "触控板捏合或 ⌘ / Ctrl + 滚动"],
@@ -4377,7 +4430,10 @@ class CrispMindEditView extends TextFileView {
   }
 
   showNodeMenu(node, event) {
-    if (this.readOnly) return;
+    if (this.readOnly) {
+      this.showReadOnlyNodeMenu(node, event);
+      return;
+    }
     const c = this.canvasController;
     if (!c.selectedNodeIds.has(node.id)) {
       c.setSelectionState([node.id], node.id);
@@ -4419,6 +4475,32 @@ class CrispMindEditView extends TextFileView {
     menu.showAtMouseEvent(event);
   }
 
+  // Read-only preview still offers the non-editing actions: follow links and copy the branch.
+  showReadOnlyNodeMenu(node, event) {
+    const c = this.canvasController;
+    if (!node || !c) return;
+    const menu = new Menu();
+    const linkedNote = mindNodeLink(node.data?.text || "", this.app.vault.getName());
+    if (linkedNote) {
+      menu.addItem(i => i.setTitle("打开关联笔记").setIcon("file-text").onClick(() => {
+        void this.openLinkedNote(linkedNote.target);
+      }));
+      menu.addItem(i => i.setTitle("在右侧分屏打开").setIcon("panel-right").onClick(() => {
+        void this.openLinkedNote(linkedNote.target, "split");
+      }));
+    }
+    if (node.children?.length) {
+      menu.addItem(i => i.setTitle(c.isNodeExpanded(node) ? "折叠分支 · F" : "展开分支 · F")
+        .setIcon(c.isNodeExpanded(node) ? "chevrons-down-up" : "chevrons-up-down")
+        .onClick(() => c.toggleCollapse(node.id)));
+    }
+    menu.addItem(i => i.setTitle("复制分支 · ⌘C").setIcon("copy").onClick(() => {
+      c.setSelectionState([node.id], node.id);
+      void c.clipboardAction("copy");
+    }));
+    menu.showAtMouseEvent(event);
+  }
+
   renderNodeIsland(node, screenCoord) {
     if (this.readOnly) return;
     this.islandEl.innerHTML = "";
@@ -4456,16 +4538,16 @@ class CrispMindEditView extends TextFileView {
     };
     updateTodoButtonState();
     todoBtn.addEventListener("click", () => {
-      if (/^\[x\]\s*/i.test(node.data.text)) {
-        node.data.text = node.data.text.replace(/^\[x\]\s*/i, "[ ] ");
-      } else if (/^\[ \]\s*/.test(node.data.text)) {
-        node.data.text = node.data.text.replace(/^\[ \]\s*/, "[x] ");
-      } else {
-        node.data.text = `[ ] ${node.data.text}`;
-      }
-      updateTodoButtonState();
-      this.canvasController.render();
-      this.canvasController.saveState();
+      // Resolve the live node (undo replaces node objects) and record one history step.
+      const controller = this.canvasController;
+      controller.transact(() => {
+        const current = controller.findNode(node.id);
+        if (!current) return false;
+        const text = current.data.text;
+        if (/^\[x\]\s*/i.test(text)) current.data.text = text.replace(/^\[x\]\s*/i, "[ ] ");
+        else if (/^\[ \]\s*/.test(text)) current.data.text = text.replace(/^\[ \]\s*/, "[x] ");
+        else current.data.text = `[ ] ${text}`;
+      });
     });
 
     // Add Wikilink [[
@@ -4626,6 +4708,12 @@ class CrispMindEditView extends TextFileView {
    Crisp Mind Exporter Subsystem (Zero-Dependency Retina PNG, PDF & SVG)
    ========================================================================== */
 
+function exportBackgroundColor(theme) {
+  const background = theme?.backgroundColor;
+  if (background && background !== "transparent") return background;
+  return theme?.solidBackground || theme?.nodeBackground || "#ffffff";
+}
+
 class CrispMindExporter {
   constructor(view) {
     this.view = view;
@@ -4690,14 +4778,51 @@ class CrispMindExporter {
     return { minX, minY, maxX, maxY, width, height, viewBox, padding };
   }
 
+  // Export what the map looks like, not the current interaction state: selection outlines
+  // are removed for the capture and restored afterwards.
+  withCleanRender(capture) {
+    const c = this.controller;
+    if (!c || typeof c.render !== "function" || !c.selectedNodeIds?.size) return capture();
+    const ids = [...c.selectedNodeIds], primary = c.selectedNodeId, anchor = c.selectionAnchorId;
+    c.selectedNodeIds = new Set();
+    c.selectedNodeId = null;
+    try {
+      c.render();
+      return capture();
+    } finally {
+      c.selectedNodeIds = new Set(ids);
+      c.selectedNodeId = primary;
+      c.selectionAnchorId = anchor;
+      c.render();
+    }
+  }
+
+  // Node labels use var(--font-interface), which does not exist inside a standalone SVG and
+  // would fall back to the default serif face. Bake in the stack the canvas was measured with.
+  resolveInterfaceFont() {
+    let stack = "";
+    try {
+      const doc = this.controller?.document || (typeof document !== "undefined" ? document : null);
+      const win = doc?.defaultView || (typeof window !== "undefined" ? window : null);
+      stack = win?.getComputedStyle?.(doc.body)?.getPropertyValue?.("--font-interface")?.trim() || "";
+    } catch (_) {}
+    return (stack || '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif').replace(/"/g, "'");
+  }
+
   toSvg({ padding = 40, transparent = false } = {}) {
+    return this.withCleanRender(() => this.buildSvg({ padding, transparent }));
+  }
+
+  buildSvg({ padding = 40, transparent = false } = {}) {
     const bbox = this.getBoundingBox(padding);
     const theme = this.controller?.theme || {};
+    const font = this.resolveInterfaceFont();
+    const bakeFont = html => html.replace(/var\(--font-interface\)/g, font);
 
     const boundariesHtml = this.controller?.boundaryGroup?.innerHTML || "";
     const linesHtml = this.controller?.linesGroup?.innerHTML || "";
     const relationsHtml = this.controller?.relationsGroup?.innerHTML || "";
-    const nodesHtml = this.controller?.nodesGroup?.innerHTML || "";
+    const nodesHtml = bakeFont(this.controller?.nodesGroup?.innerHTML || "");
     const annotationsHtml = this.controller?.annotationsGroup?.innerHTML || "";
 
     const patternDefs = !transparent && theme.paperPattern
@@ -4705,7 +4830,7 @@ class CrispMindExporter {
       : "";
     const bgRect = transparent
       ? ""
-      : `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="${theme.backgroundColor || '#1e1e2e'}" />`
+      : `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="${exportBackgroundColor(theme)}" />`
         + (patternDefs
           ? `<rect x="${bbox.minX - bbox.padding}" y="${bbox.minY - bbox.padding}" width="${bbox.width}" height="${bbox.height}" fill="url(#crisp-paper-grid)" />`
           : "");
@@ -4778,7 +4903,7 @@ class CrispMindExporter {
     canvas.height = Math.round(height * scale);
     const ctx = canvas.getContext("2d");
 
-    ctx.fillStyle = this.controller?.theme?.backgroundColor || "#ffffff";
+    ctx.fillStyle = exportBackgroundColor(this.controller?.theme || {});
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     const img = new Image();
@@ -4870,6 +4995,16 @@ class CrispMindExporter {
   }
 }
 
+// Next free "<folder>/<name>.<ext>" path. A root-level map has parent path "/", which must
+// not produce "//name.ext".
+async function exportTargetPath(vault, parentPath, baseName, extension) {
+  const prefix = parentPath && parentPath !== "/" ? `${parentPath.replace(/\/+$/, "")}/` : "";
+  const taken = async path => !!vault.getAbstractFileByPath?.(path) || !!(await vault.adapter?.exists?.(path));
+  let path = `${prefix}${baseName}.${extension}`, index = 2;
+  while (await taken(path)) path = `${prefix}${baseName} ${index++}.${extension}`;
+  return path;
+}
+
 class CrispMindExportModal extends Modal {
   constructor(app, view) {
     super(app);
@@ -4890,10 +5025,10 @@ class CrispMindExportModal extends Modal {
 
     const formatSetting = new Setting(contentEl)
       .setName("导出格式")
-      .setDesc("支持高清位图图片、矢量排版文档或矢量图形代码。")
+      .setDesc("PNG 与 PDF 为高清位图（PDF 内嵌 2x 栅格图，非矢量），SVG 为可无损缩放的矢量图形。")
       .addDropdown(dd => {
         dd.addOption("png", "PNG 高清图片 (位图)")
-          .addOption("pdf", "PDF 排版文档 (打印/阅读)")
+          .addOption("pdf", "PDF 文档 (2x 栅格，打印/分享)")
           .addOption("svg", "SVG 矢量图形 (无损/设计)")
           .setValue(this.selectedFormat)
           .onChange(val => {
@@ -4954,7 +5089,8 @@ class CrispMindExportModal extends Modal {
 
   async handleExport(destination) {
     const format = this.selectedFormat;
-    const baseName = this.view.file ? this.view.file.basename : "crisp-mindmap";
+    // "Map.mind.md" has basename "Map.mind"; export as "Map.png", not "Map.mind.png".
+    const baseName = (this.view.file ? this.view.file.basename : "crisp-mindmap").replace(/\.mind$/i, "") || "crisp-mindmap";
     const fileName = `${baseName}.${format}`;
     let dataBuffer;
     let mimeType = "application/octet-stream";
@@ -4974,18 +5110,21 @@ class CrispMindExportModal extends Modal {
     }
 
     if (destination === "vault") {
-      const parentPath = this.view.file?.parent?.path || "";
-      const targetPath = parentPath ? `${parentPath}/${fileName}` : fileName;
+      const targetPath = await exportTargetPath(this.app.vault, this.view.file?.parent?.path || "", baseName, format);
       const ab = dataBuffer instanceof ArrayBuffer ? dataBuffer : dataBuffer.buffer;
-      await this.app.vault.adapter.writeBinary(targetPath, ab);
+      // Never overwrite: an existing image with the same name gets a numbered sibling instead.
+      if (typeof this.app.vault.createBinary === "function") await this.app.vault.createBinary(targetPath, ab);
+      else await this.app.vault.adapter.writeBinary(targetPath, ab);
       new Notice(`导图已成功导出至：${targetPath}`);
     } else {
       const blob = new Blob([dataBuffer], { type: mimeType });
       const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
+      const href = URL.createObjectURL(blob);
+      a.href = href;
       a.download = fileName;
       a.click();
-      URL.revokeObjectURL(a.href);
+      // Revoking synchronously can cancel the download before the browser has read the blob.
+      window.setTimeout(() => URL.revokeObjectURL(href), 60000);
       new Notice(`已开始下载：${fileName}`);
     }
   }
@@ -5025,6 +5164,8 @@ class CrispMindPromptModal extends Modal {
       this.options.onSubmit?.(value);
     });
     this.inputEl.addEventListener("keydown", event => {
+      // Enter that confirms an IME candidate must not submit the dialog.
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Enter") {
         event.preventDefault();
         confirm.click();
@@ -5068,6 +5209,7 @@ class CrispMindSearchModal extends Modal {
 
     this.inputEl.addEventListener("input", () => this.updateResults());
     this.inputEl.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.keyCode === 229) return;
       if (event.key === "Enter") {
         const first = this.resultsEl.querySelector(".crisp-mind-search-result");
         if (first) {
@@ -5551,6 +5693,10 @@ class CrispMindSettingTab extends PluginSettingTab {
           .onChange(async (val) => {
             this.plugin.settings.toolbarPosition = val;
             await this.plugin.saveSettings();
+            // Apply to maps that are already open.
+            this.app.workspace.getLeavesOfType(VIEW_TYPE_CRISP_MIND).forEach(leaf => {
+              leaf.view?.toolbarEl?.classList?.toggle("toolbar-top", val === "top");
+            });
           });
       });
 

@@ -94,6 +94,7 @@ function setupTestContext(publicKeyPem) {
     module: { exports: {} },
     console,
     window: {
+      setTimeout,
       getComputedStyle: () => ({
         getPropertyValue: (prop) => {
           if (prop === "--color-accent") return "#7c3aed";
@@ -134,7 +135,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -1596,4 +1597,212 @@ test('plain external text remains ordinary outline paste when the rich snapshot 
   canvas.pasteBranchText('- External',canvas.docData.root.id);
   const pasted=canvas.docData.root.children.at(-1);
   assert.equal(pasted.data.text,'External');assert.equal(pasted.data.note,undefined);
+});
+
+/* ---------- 1.5.2 regressions ---------- */
+
+// Runs the real render() (canvasFixture stubs it) against fake SVG groups.
+function renderForReal(canvas, helpers) {
+  canvas.document = { createElementNS: (_n, tag) => fakeSvgNode(tag) };
+  for (const key of ["linesGroup", "nodesGroup", "boundaryGroup", "relationsGroup", "annotationsGroup"]) {
+    canvas[key] = Object.assign(fakeSvgNode("g"), { innerHTML: "" });
+  }
+  canvas.container = { style: { setProperty() {}, removeProperty() {} }, classList: { toggle() {} } };
+  canvas.nodeElements = new Map();
+  canvas.theme = helpers.getComputedThemeConfig("crisp-nord");
+  setupTestContext().helpers.CrispMindCanvas.prototype.render.call(canvas);
+  return canvas;
+}
+
+test("fishbone: a bone child moved one level deeper drops its old spine anchor", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children = [{ id: "b1", data: { text: "B1" }, children: [
+    { id: "s1", data: { text: "S1" }, children: [] },
+    { id: "s2", data: { text: "S2" }, children: [] }] }];
+  canvas.setLayout("fishbone");
+  assert.ok(canvas.moveNode("s2", "s1", "inside"));
+  canvas.calculateLayout();
+  const s1 = canvas.findNode("s1"), s2 = canvas.findNode("s2");
+  assert.equal(s2._boneConnectX, undefined, "level-3 node must not keep a bone anchor");
+  renderCanvasToFakeSvg(canvas, helpers);
+  const edge = canvas.linesGroup.children.at(-1).attrs.d;
+  const startX = Number(edge.match(/^M ([\d.-]+)/)[1]);
+  assert.ok(Math.abs(startX - s1._x) < 3, `S1→S2 edge should start at S1's left edge (${s1._x}), got ${startX}`);
+});
+
+test("timeline: collapsing the root removes the milestone dots", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.setLayout("timeline");
+  renderForReal(canvas, helpers);
+  assert.equal(canvas.linesGroup.children.filter(n => n.tag === "circle").length, 3);
+  canvas.docData.root.data.collapsed = true;
+  renderForReal(canvas, helpers);
+  assert.equal(canvas.linesGroup.children.filter(n => n.tag === "circle").length, 0);
+});
+
+test("fishbone branch focus draws bones from the spine of the focused root", () => {
+  const { canvas, helpers } = canvasFixture();
+  canvas.docData.root.children[0].children = [
+    { id: "f1", data: { text: "F1" }, children: [] },
+    { id: "f2", data: { text: "F2" }, children: [] }];
+  canvas.setLayout("fishbone");
+  canvas.branchFocusId = canvas.docData.root.children[0].id;
+  renderForReal(canvas, helpers);
+  const bone = canvas.findNode("f1");
+  const firstEdge = canvas.linesGroup.children.find(n => n.tag === "path" && / Z$/.test(n.attrs.d || "") && n.attrs["data-branch-depth"]);
+  const startX = Number(firstEdge.attrs.d.match(/^M ([\d.-]+)/)[1]);
+  assert.ok(Math.abs(startX - bone._spineConnectX) < 3, `bone edge should start on the spine (${bone._spineConnectX}), got ${startX}`);
+});
+
+test("export captures the map without selection outlines and restores the selection", () => {
+  const { helpers } = setupTestContext();
+  const seen = [];
+  const controller = {
+    selectedNodeIds: new Set(["a", "b"]), selectedNodeId: "a", selectionAnchorId: "a",
+    render() { seen.push(this.selectedNodeIds.size); },
+    theme: {}, nodesGroup: { innerHTML: "" }
+  };
+  const exporter = new helpers.CrispMindExporter({ canvasController: controller });
+  exporter.getBoundingBox = () => ({ minX: 0, minY: 0, width: 10, height: 10, viewBox: "0 0 10 10", padding: 0 });
+  exporter.toSvg();
+  assert.deepEqual(seen, [0, 2], "render once clean for capture, once to restore");
+  assert.equal(controller.selectedNodeId, "a");
+  assert.deepEqual([...controller.selectedNodeIds], ["a", "b"]);
+});
+
+test("export bakes a concrete font stack instead of the undefined CSS variable", () => {
+  const { helpers } = setupTestContext();
+  const controller = { theme: {}, nodesGroup: { innerHTML: '<text font-family="var(--font-interface)" style="font-family: var(--font-interface);">A</text>' } };
+  const exporter = new helpers.CrispMindExporter({ canvasController: controller });
+  exporter.getBoundingBox = () => ({ minX: 0, minY: 0, width: 10, height: 10, viewBox: "0 0 10 10", padding: 0 });
+  const svg = exporter.toSvg().svgString;
+  assert.doesNotMatch(svg, /var\(--font-interface\)/);
+  assert.doesNotMatch(svg, /font-family="[^"]*"[^ >]*"/, "attribute quoting stays valid");
+});
+
+test("export background stays opaque when the window theme is translucent", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(helpers.exportBackgroundColor({ backgroundColor: "transparent", solidBackground: "#202020" }), "#202020");
+  assert.equal(helpers.exportBackgroundColor({ backgroundColor: "#f6f1e8" }), "#f6f1e8");
+  assert.equal(helpers.exportBackgroundColor({}), "#ffffff");
+});
+
+test("export to vault never overwrites and strips the .mind suffix at the vault root", async () => {
+  const { helpers } = setupTestContext();
+  const existing = new Set(["Map.png", "Map 2.png", "Maps/Plan.png"]);
+  const vault = { getAbstractFileByPath: p => existing.has(p) ? {} : null, adapter: { exists: async () => false } };
+  assert.equal(await helpers.exportTargetPath(vault, "/", "Map", "png"), "Map 3.png");
+  assert.equal(await helpers.exportTargetPath(vault, "", "Fresh", "svg"), "Fresh.svg");
+  assert.equal(await helpers.exportTargetPath(vault, "Maps", "Plan", "png"), "Maps/Plan 2.png");
+});
+
+test("snapshots keep only the newest per file and leave other files and legacy snapshots alone", async () => {
+  const { helpers } = setupTestContext();
+  const files = new Map();
+  const folder = ".obsidian/plugins/crisp-mind/backups";
+  files.set(`${folder}/1000-node-legacy.json`, "{}");
+  const otherKey = helpers.snapshotSourceKey("Other.mind.md");
+  files.set(`${folder}/1001-${otherKey}-node-other.json`, "{}");
+  const adapter = {
+    exists: async p => p === folder || files.has(p),
+    mkdir: async () => {},
+    write: async (p, c) => { files.set(p, c); },
+    list: async () => ({ files: [...files.keys()], folders: [] }),
+    remove: async p => { files.delete(p); }
+  };
+  const view = Object.create(helpers.CrispMindEditView.prototype);
+  view.app = { vault: { adapter, configDir: ".obsidian" } };
+  const file = { path: "Map.mind.md" };
+  // The plugin runs in its own vm realm with its own Date; space writes out in real time.
+  for (let i = 0; i < helpers.MIND_SNAPSHOT_LIMIT + 5; i++) {
+    await view.writeSnapshot(`v${i}`, "before-save", file);
+    await new Promise(resolve => setTimeout(resolve, 2));
+  }
+  const ownKey = helpers.snapshotSourceKey(file.path);
+  const own = [...files.keys()].filter(p => p.includes(`-${ownKey}-`)).sort();
+  assert.equal(own.length, helpers.MIND_SNAPSHOT_LIMIT);
+  assert.equal(JSON.parse(files.get(own.at(-1))).content, `v${helpers.MIND_SNAPSHOT_LIMIT + 4}`, "newest kept");
+  assert.equal(JSON.parse(files.get(own[0])).content, "v5", "oldest five pruned");
+  assert.ok(files.has(`${folder}/1000-node-legacy.json`));
+  assert.ok(files.has(`${folder}/1001-${otherKey}-node-other.json`));
+});
+
+function fakeModalEl() {
+  const el = {
+    listeners: {}, children: [], value: "",
+    empty() {}, addClass() {}, focus() {}, select() {},
+    createEl(tag, opts) { const c = fakeModalEl(); c.tag = tag; c.opts = opts; el.children.push(c); return c; },
+    createDiv(opts) { return el.createEl("div", opts); },
+    addEventListener(type, fn) { el.listeners[type] = fn; },
+    querySelector() { return null; },
+    click() { el.listeners.click?.(); }
+  };
+  return el;
+}
+
+test("IME Enter that confirms a candidate does not submit the prompt dialog", () => {
+  const { helpers } = setupTestContext();
+  const submitted = [];
+  const modal = new helpers.CrispMindPromptModal({}, { onSubmit: v => submitted.push(v) });
+  modal.contentEl = fakeModalEl();
+  modal.onOpen();
+  modal.inputEl.value = "边界";
+  const press = extra => modal.inputEl.listeners.keydown({ key: "Enter", preventDefault() {}, ...extra });
+  press({ isComposing: true, keyCode: 229 });
+  assert.deepEqual(submitted, []);
+  press({});
+  assert.deepEqual(submitted, ["边界"]);
+});
+
+function keyboardFixture({ readOnly = false } = {}) {
+  const { canvas, helpers } = canvasFixture();
+  canvas.options.readOnly = readOnly;
+  const handlers = {};
+  const target = { addEventListener(type, fn) { (handlers[type] ||= []).push(fn); }, removeEventListener() {} };
+  canvas.nodesGroup = target; canvas.window = target;
+  canvas.container = Object.assign({}, target, { focus() {}, clientWidth: 800, clientHeight: 600 });
+  canvas.bindEvents();
+  const press = (key, extra = {}) => handlers.keydown.forEach(fn => fn({
+    key, target: { closest: () => null }, preventDefault() {}, stopPropagation() {}, ...extra
+  }));
+  return { canvas, helpers, press };
+}
+
+test("Esc with nothing selected leaves branch focus", () => {
+  const { canvas, press } = keyboardFixture();
+  canvas.resetZoom = () => {};
+  canvas.setBranchFocus(canvas.docData.root.children[0].id);
+  press("Escape");
+  assert.ok(canvas.branchFocusId, "first Esc clears the selection only");
+  assert.equal(canvas.selectedNodeIds.size, 0);
+  press("Escape");
+  assert.equal(canvas.branchFocusId, null);
+});
+
+test("F folds a branch in read-only preview without touching history", () => {
+  const { canvas, press } = keyboardFixture({ readOnly: true });
+  const branch = canvas.docData.root.children[0];
+  canvas.setSelectionState([branch.id], branch.id);
+  const historyLength = canvas.history.length;
+  press("f");
+  assert.equal(branch.data.collapsed, true);
+  assert.equal(canvas.history.length, historyLength);
+});
+
+test("read-only node menu still offers opening the linked note and copying", () => {
+  const plugin = setupTestContext();
+  const opened = [];
+  const node = { id: "n", data: { text: "See [[Notes/Target|Target]]" }, children: [] };
+  const view = {
+    readOnly: true,
+    app: { vault: { getName: () => "Vault" } },
+    canvasController: { isNodeExpanded: () => true, setSelectionState() {}, clipboardAction: async () => {} },
+    openLinkedNote: (target, pane) => opened.push([target, pane])
+  };
+  view.showReadOnlyNodeMenu = plugin.helpers.CrispMindEditView.prototype.showReadOnlyNodeMenu;
+  plugin.helpers.CrispMindEditView.prototype.showNodeMenu.call(view, node, {});
+  const titles = plugin.testMenus.at(-1).items.map(item => item.title);
+  assert.ok(titles.includes("打开关联笔记"));
+  assert.ok(titles.includes("复制分支 · ⌘C"));
+  assert.ok(!titles.some(t => /删除|编辑/.test(t)), "no editing actions in read-only");
 });
