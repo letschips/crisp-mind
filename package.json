@@ -1,6 +1,6 @@
 {
   "name": "crisp-mind",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "description": "Your thought graphs, natively woven. Local-first, Obsidian-native mind mapping engine for Crisp Suite.",
   "author": "letschips",
   "authorUrl": "https://github.com/letschips",
@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test tests/*.test.cjs",
     "check": "node --check main.js && node --test tests/*.test.cjs",
-    "sync": "test -n \"$CRISP_MIND_VAULT\" && cp main.js styles.css manifest.json README.md package.json \"$CRISP_MIND_VAULT/.obsidian/plugins/crisp-mind/\""
+    "sync": "test -n \"$CRISP_MIND_VAULT\" && cp main.js styles.css manifest.json README.md package.json \"$CRISP_MIND_VAULT/.obsidian/plugins/crisp-mind/\"",
+    "test:e2e:license-config": "node tests/config-dir.e2e.cjs"
   },
   "keywords": [
     "obsidian",

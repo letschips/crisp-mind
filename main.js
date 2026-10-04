@@ -340,7 +340,8 @@ function collectVaultCrispLicenseCandidates(app) {
     const fsMod = typeof require === "function" ? require("fs") : null;
     if (pathMod && fsMod) {
       const basePath = app.vault?.adapter?.basePath || (app.vault?.adapter?.getBasePath ? app.vault.adapter.getBasePath() : "");
-      const pluginsDir = basePath ? pathMod.join(basePath, ".obsidian", "plugins") : "";
+      const configDir = app.vault?.configDir || ".obsidian";
+      const pluginsDir = basePath ? pathMod.join(basePath, configDir, "plugins") : "";
       if (pluginsDir && fsMod.existsSync(pluginsDir)) {
         for (const d of fsMod.readdirSync(pluginsDir)) {
           if (!d.startsWith("crisp-") || d === "crisp-mind") continue;
