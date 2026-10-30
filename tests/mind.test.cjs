@@ -1806,3 +1806,34 @@ test("read-only node menu still offers opening the linked note and copying", () 
   assert.ok(titles.includes("复制分支 · ⌘C"));
   assert.ok(!titles.some(t => /删除|编辑/.test(t)), "no editing actions in read-only");
 });
+
+test("line and paragraph separators in node text do not make a saved map read-only on reopen", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown({
+    frontmatter: "crisp-mind: true\n",
+    data: { version: "1.1", layout: "mindMap", theme: "crisp-obsidian", root: {
+      id: "r", data: { text: "root line" }, children: [
+        { id: "a", data: { text: "first second" }, children: [] },
+        { id: "b", data: { text: "first second" }, children: [] }
+      ]
+    } }
+  });
+  assert.equal(helpers.inspectMindSource(raw), null);
+});
+
+test("saving a plain note as an editable map creates a clean .mind.md and leaves the note alone", async () => {
+  const { helpers } = setupTestContext();
+  const created = [];
+  const v = Object.create(helpers.CrispMindEditView.prototype);
+  v.file = { basename: "项目计划", path: "Notes/项目计划.md", parent: { path: "Notes" } };
+  v.mindDoc = helpers.parseMindMarkdown("# 计划\n- 第一项\n- \n  - 子项\n");
+  v.app = { vault: {
+    getAbstractFileByPath: path => path === "Notes/项目计划.mind.md" ? {} : null,
+    create: async (path, content) => { created.push({ path, content }); return { path }; }
+  } };
+  v.plugin = { requireLicense: () => true, openActiveFileAsMindMap: async () => {} };
+  await v.saveAsEditableMap();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].path, "Notes/项目计划 2.mind.md");
+  assert.equal(helpers.inspectMindSource(created[0].content), null);
+});

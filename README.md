@@ -46,7 +46,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 
 1. 打开命令面板 (`Cmd/Ctrl + P`)，输入并运行：
    - `Crisp Mind: 新建思维导图`：快速创建新的 `.mind.md` 文件并进入导图视图。
-   - `Crisp Mind: 以思维导图视图打开当前大纲笔记`：将库内任意现有大纲转为思维导图伴随视图。
+   - `Crisp Mind: 以思维导图视图打开当前大纲笔记`：以只读预览打开库内现有大纲，可另存为可编辑的 `.mind.md`，原笔记保持不变。
 2. 在文件列表中右键任意 `.mind.md` 文件，选择 **用 Crisp Mind 打开**。
 3. 点击画布底部浮动工具栏最右侧的 **帮助图标 (`?`)**，即可查看完整快捷键与操作手势。
 

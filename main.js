@@ -398,13 +398,14 @@ function markdownOutlineToTree(markdown) {
     if (trimmed.startsWith("---")) continue;
     if (/^[a-zA-Z0-9_-]+:\s*.*/.test(trimmed) && items.length === 0 && !trimmed.startsWith("- ")) continue;
 
-    const headingMatch = line.match(/^#{1,6}\s+(.*)/);
+    // [^\n] rather than ".": "." stops at U+2028/U+2029, which node text may contain.
+    const headingMatch = line.match(/^#{1,6}\s+([^\n]*)/);
     if (headingMatch && items.length === 0) {
       rootText = headingMatch[1].trim();
       continue;
     }
 
-    const listMatch = line.match(/^(\s*)(?:[-*+]|\d+\.)\s+(.*)/);
+    const listMatch = line.match(/^(\s*)(?:[-*+]|\d+\.)\s+([^\n]*)/);
     if (listMatch) {
       const indent = listMatch[1].length;
       const text = listMatch[2].trim();
@@ -3712,9 +3713,9 @@ class CrispMindEditView extends TextFileView {
     return this.saveQueue;
   }
 
-  async saveCopy(content = assembleMindMarkdown(this.mindDoc)) {
+  async saveCopy(content = assembleMindMarkdown(this.mindDoc), suffix = " 恢复副本") {
     const prefix = this.file?.parent?.path && this.file.parent.path !== "/" ? this.file.parent.path + "/" : "";
-    const name = (this.file?.basename || "导图").replace(/\.mind$/, "") + " 恢复副本";
+    const name = (this.file?.basename || "导图").replace(/\.mind$/, "") + suffix;
     let path = `${prefix}${name}.mind.md`, i = 2;
     while (this.app.vault.getAbstractFileByPath(path)) path = `${prefix}${name} ${i++}.mind.md`;
     try {
@@ -3722,6 +3723,14 @@ class CrispMindEditView extends TextFileView {
       await this.plugin.openActiveFileAsMindMap(file);
       new Notice(`已保存副本：${path}`);
     } catch (error) { new Notice(`另存失败：${error.message}`, 8000); }
+  }
+
+  // A plain note stays preview-only; editing happens in a separate .mind.md. Outlines may hold
+  // empty bullets, so repair first or the copy would reopen as corrupt.
+  async saveAsEditableMap() {
+    if (!this.mindDoc || !this.requireLicense("另存为可编辑导图")) return;
+    const data = validateAndRepairTree(cleanMindData(this.mindDoc.data));
+    await this.saveCopy(assembleMindMarkdown({ ...this.mindDoc, data }), "");
   }
 
   async showRecovery() {
@@ -3929,6 +3938,10 @@ class CrispMindEditView extends TextFileView {
       const banner = container.createDiv({ cls: "crisp-mind-license-banner" });
       banner.createSpan({ text: "Crisp Mind 未激活 · 当前为只读预览" });
       banner.createEl("button", { text: "打开授权设置" }).addEventListener("click", () => this.openLicenseSettings());
+    } else if (this.baseReadOnly) {
+      const banner = container.createDiv({ cls: "crisp-mind-license-banner" });
+      banner.createSpan({ text: "普通笔记只能预览，不能编辑" });
+      banner.createEl("button", { text: "另存为可编辑导图" }).addEventListener("click", () => { void this.saveAsEditableMap(); });
     } else if (this.readOnly) {
       const hint = container.createDiv({cls: "crisp-mind-hint"});
       hint.textContent = "大纲预览 · 原笔记保持不变";
