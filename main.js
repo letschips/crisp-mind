@@ -5659,7 +5659,7 @@ class CrispMindSettingTab extends PluginSettingTab {
     logoEl.innerHTML = CRISP_MIND_SVG;
     headerEl.createEl("h2", { text: "Crisp Mind" });
     containerEl.createEl("p", {
-      text: "专为 Obsidian 与思维创作者打造的本地优先、原生咬合式思维导图系统。",
+      text: "把思路画清楚",
       cls: "crisp-mind-settings-subhead"
     });
 
