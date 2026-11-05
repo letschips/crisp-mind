@@ -497,6 +497,34 @@ function noteMarkdownForPreview(note, resolveImage) {
   }).join("\n");
 }
 
+// Copying an image file (Finder, CleanShot, …) puts a file reference on the clipboard, often with
+// the path as plain text, instead of image data. Resolve those to image files on disk. Plain text
+// counts only when every line is an absolute path, so a copied outline is never mistaken for files.
+function clipboardImagePaths({ fileUrl = "", text = "" } = {}, exists = () => false) {
+  const toPath = value => {
+    const raw = String(value || "").trim().replace(/^["']|["']$/g, "");
+    if (!raw) return null;
+    if (/^file:\/\//i.test(raw)) {
+      try {
+        let path = decodeURIComponent(new URL(raw).pathname);
+        if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
+        return path;
+      } catch (_) { return null; }
+    }
+    return raw.startsWith("/") || /^[A-Za-z]:[\\/]/.test(raw) ? raw : null;
+  };
+  const candidates = String(fileUrl || "").split(/\r?\n/).map(toPath).filter(Boolean);
+  const lines = String(text || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const textPaths = lines.map(toPath);
+  if (lines.length && textPaths.every(Boolean)) candidates.push(...textPaths);
+  const seen = new Set();
+  return candidates.filter(path => {
+    if (seen.has(path) || !isMindImagePath(path)) return false;
+    seen.add(path);
+    try { return !!exists(path); } catch (_) { return false; }
+  });
+}
+
 function outlineNodeLine(node) {
   const text = outlineNodeText(node?.data?.text);
   const image = normalizeMindImage(node?.data?.image);
@@ -3607,6 +3635,13 @@ class CrispMindCanvas {
   // A screenshot or a browser "Copy Image" has image data and no plain text. Copied Finder files
   // also carry their icon as an image, but always with the file name as text: those stay text.
   async pasteClipboardImage(id) {
+    // A copied image file wins over clipboard image data, which for Finder is only the file icon.
+    const files = this.options.readClipboardImageFiles?.() || [];
+    if (files.length && this.options.onPasteImageFiles) {
+      if (!id) { new Notice("先选中一个节点，再粘贴图片"); return true; }
+      await this.options.onPasteImageFiles(files, id);
+      return true;
+    }
     const clipboard = this.window.navigator.clipboard;
     if (!this.options.onPasteImage || typeof clipboard?.read !== "function") return false;
     let blob = null;
@@ -4163,6 +4198,8 @@ class CrispMindEditView extends TextFileView {
       onOpenImage: path => this.openImagePreview(path),
       onRelinkImage: id => this.pickImage(id),
       onPasteImage: (blob, id) => this.insertPastedImage(blob, id),
+      readClipboardImageFiles: () => this.readClipboardImageFiles(),
+      onPasteImageFiles: (paths, id) => this.insertImageFilesFromDisk(paths, id),
       onDropImage: (dataTransfer, id) => this.insertDroppedImage(dataTransfer, id),
       isImageDrag: () => !!this.draggedVaultImage(),
       onSelectNode: (node, screenCoord) => {
@@ -5129,6 +5166,36 @@ class CrispMindEditView extends TextFileView {
       const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
       const file = await this.saveImageAttachment(await blob.arrayBuffer(), `Pasted image ${stamp}.${ext}`);
       await this.attachImageFile(nodeId, file);
+    } catch (error) { new Notice(`粘贴图片失败：${error.message}`); }
+  }
+
+  readClipboardImageFiles() {
+    let electron, fs;
+    try { electron = require("electron"); fs = require("fs"); } catch (_) { return []; }
+    const clipboard = electron?.clipboard;
+    if (!clipboard) return [];
+    let fileUrl = "", text = "";
+    try { fileUrl = clipboard.read("public.file-url") || ""; } catch (_) {}
+    try { if (!fileUrl) fileUrl = clipboard.read("text/uri-list") || ""; } catch (_) {}
+    try { text = clipboard.readText() || ""; } catch (_) {}
+    return clipboardImagePaths({ fileUrl, text }, path => fs.statSync(path).isFile());
+  }
+
+  // Files already inside this vault are linked as they are; anything else is copied in as an attachment.
+  async insertImageFilesFromDisk(paths, nodeId) {
+    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    try {
+      const path = paths[0];
+      const base = this.app.vault.adapter?.getBasePath?.()?.replace(/[\\/]+$/, "");
+      const inVault = base && path.startsWith(base + "/") ? this.imageFile(path.slice(base.length + 1)) : null;
+      if (inVault) await this.attachImageFile(nodeId, inVault);
+      else {
+        const buffer = require("fs").readFileSync(path);
+        const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+        const file = await this.saveImageAttachment(data, path.split(/[\\/]/).pop());
+        await this.attachImageFile(nodeId, file);
+      }
+      if (paths.length > 1) new Notice(`一个节点只能放一张图片，已插入第一张（共 ${paths.length} 张）`);
     } catch (error) { new Notice(`粘贴图片失败：${error.message}`); }
   }
 

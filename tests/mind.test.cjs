@@ -136,7 +136,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -2107,4 +2107,33 @@ test("styles let the note badge and node images receive the pointer", () => {
     const last = rules(selector).map(body => body.match(/pointer-events:\s*([^;]+)/)?.[1]?.trim()).filter(Boolean).pop();
     assert.notEqual(last, "none", `${selector} must not disable pointer events`);
   }
+});
+
+// Regression (2026-11-05, user report): copying an image file (Finder, CleanShot) and pasting it
+// into a node inserted the file path as new nodes instead of the picture.
+test("clipboard file references and pasted file paths resolve to image files only", () => {
+  const { helpers } = setupTestContext();
+  const exists = p => ["/Users/me/Desktop/CleanShot 2026-11-05 at 10.27.00@2x.jpg", "/tmp/复制 测试.png"].includes(p);
+  assert.deepEqual([...helpers.clipboardImagePaths({ fileUrl: "file:///tmp/%E5%A4%8D%E5%88%B6%20%E6%B5%8B%E8%AF%95.png", text: "" }, exists)], ["/tmp/复制 测试.png"]);
+  assert.deepEqual([...helpers.clipboardImagePaths({ fileUrl: "", text: "/Users/me/Desktop/CleanShot 2026-11-05 at 10.27.00@2x.jpg" }, exists)], ["/Users/me/Desktop/CleanShot 2026-11-05 at 10.27.00@2x.jpg"]);
+  assert.equal(helpers.clipboardImagePaths({ fileUrl: "", text: "/Users/me/notes.md" }, () => true).length, 0, "non-image files stay text");
+  assert.equal(helpers.clipboardImagePaths({ fileUrl: "", text: "/Users/me/missing.png" }, exists).length, 0, "paths that do not exist stay text");
+  assert.equal(helpers.clipboardImagePaths({ fileUrl: "", text: "- 主题 ![[a.png]]\n  - 子主题" }, () => true).length, 0, "copied outlines stay text");
+  assert.deepEqual([...helpers.clipboardImagePaths({ fileUrl: "file:///tmp/%E5%A4%8D%E5%88%B6%20%E6%B5%8B%E8%AF%95.png", text: "/tmp/复制 测试.png" }, exists)], ["/tmp/复制 测试.png"], "deduplicated");
+});
+
+test("pasting a copied image file attaches it instead of creating path nodes", async () => {
+  const { canvas } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  const before = canvas.docData.root.children.length;
+  const pasted = [];
+  canvas.options.onPasteImage = async () => { throw new Error("image data path must not run"); };
+  canvas.options.readClipboardImageFiles = () => ["/Users/me/Desktop/shot.jpg"];
+  canvas.options.onPasteImageFiles = async (paths, id) => { pasted.push([paths, id]); };
+  canvas.window = { navigator: { clipboard: { readText: async () => "/Users/me/Desktop/shot.jpg", read: async () => [] } } };
+  canvas.selectNode(node.id);
+  await canvas.clipboardAction("paste");
+  assert.deepEqual(JSON.parse(JSON.stringify(pasted)), [[["/Users/me/Desktop/shot.jpg"], node.id]]);
+  assert.equal(canvas.docData.root.children.length, before);
+  assert.equal(node.children.length, 1, "no path node was added");
 });
