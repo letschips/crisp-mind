@@ -136,7 +136,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -2060,4 +2060,38 @@ test("Crisp Mind registers its hover source so image and note previews follow th
   assert.equal(typeof plugin.registerHoverSource, "function");
   plugin.registerHoverSource();
   assert.equal(plugin.hoverSources["crisp-mind-view"].defaultMod, true);
+});
+
+// ---- Note hover preview (1.8.0) ----
+test("note preview turns bare image paths into embeds and leaves everything else alone", () => {
+  const { helpers } = setupTestContext();
+  const note = "对应原图：\nimages/01_备案资料清单.jpeg\n查看方式：打开手册\n  images/缺失.png  \n![[已嵌入.png]]\n[[某笔记]]\nnot/an/image.pdf";
+  const resolve = path => path === "images/01_备案资料清单.jpeg" ? "手册/images/01_备案资料清单.jpeg" : null;
+  assert.equal(helpers.noteMarkdownForPreview(note, resolve),
+    "对应原图：\n![[手册/images/01_备案资料清单.jpeg]]\n查看方式：打开手册\n  images/缺失.png  \n![[已嵌入.png]]\n[[某笔记]]\nnot/an/image.pdf");
+  assert.equal(helpers.noteMarkdownForPreview("", resolve), "");
+});
+
+test("hovering the note badge reports enter and leave for that node", () => {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  node.data.note = "备注";
+  const events = [];
+  canvas.options.onNoteHover = (n, el, entering) => events.push([n.id, entering]);
+  canvas.calculateLayout();
+  const listeners = [];
+  const make = tag => {
+    const el = fakeSvgNode(tag);
+    el.addEventListener = (type, fn) => listeners.push({ el, type, fn });
+    return el;
+  };
+  canvas.theme = helpers.getComputedThemeConfig("crisp-nord");
+  canvas.document = { createElementNS: (_ns, tag) => make(tag) };
+  canvas.linesGroup = make("g"); canvas.nodesGroup = make("g"); canvas.nodeElements = new Map();
+  canvas.renderBranch(canvas.docData.root);
+  const badge = listeners.filter(l => (l.el.attrs.class || "").includes("crisp-mind-note-indicator"));
+  assert.deepEqual(badge.map(l => l.type).sort(), ["mouseenter", "mouseleave"]);
+  badge.find(l => l.type === "mouseenter").fn({});
+  badge.find(l => l.type === "mouseleave").fn({});
+  assert.deepEqual(JSON.parse(JSON.stringify(events)), [[node.id, true], [node.id, false]]);
 });

@@ -4,7 +4,7 @@
    ========================================================================== */
 
 const obsidian = require("obsidian");
-const { Plugin, TextFileView, MarkdownView, Setting, PluginSettingTab, Notice, TFile, Modal, FuzzySuggestModal, setIcon, Menu, requestUrl } = obsidian;
+const { Plugin, TextFileView, MarkdownView, Setting, PluginSettingTab, Notice, TFile, Modal, FuzzySuggestModal, setIcon, Menu, requestUrl, MarkdownRenderer, Component } = obsidian;
 
 // Obsidian's Plugin.loadData() returns null for a missing data.json but undefined when the file exists
 // and cannot be read or parsed (sync conflict, interrupted write), and Plugin.saveData() swallows write
@@ -484,6 +484,17 @@ function splitOutlineImage(text) {
   let rest = source.slice(0, match.index).trim();
   if (!rest) rest = image.path.split("/").pop().replace(/\.[^.]+$/, "") || "Topic";
   return { text: rest, image };
+}
+
+// Notes are plain text. For the hover preview, a line that is just an image path the vault can
+// resolve becomes an embed, so "对应原图：images/01.jpeg" shows the picture itself.
+function noteMarkdownForPreview(note, resolveImage) {
+  return String(note || "").split(/\r?\n/).map(line => {
+    const path = line.trim();
+    if (!path || /[\[\]()|]/.test(path) || !isMindImagePath(path)) return line;
+    const resolved = resolveImage?.(path);
+    return resolved ? `![[${resolved}]]` : line;
+  }).join("\n");
 }
 
 function outlineNodeLine(node) {
@@ -2897,7 +2908,15 @@ class CrispMindCanvas {
       mark.setAttribute("font-weight", "700");
       mark.setAttribute("fill", "#ffffff");
       mark.textContent = "N";
-      note.append(circle, mark);
+      // The visible badge is tiny; a transparent ring makes it easy to hover.
+      const hit = this.document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      hit.setAttribute("cx", node._w - 9);
+      hit.setAttribute("cy", 9);
+      hit.setAttribute("r", 12);
+      hit.setAttribute("fill", "transparent");
+      note.append(hit, circle, mark);
+      note.addEventListener("mouseenter", () => this.options.onNoteHover?.(g._mindNode, note, true));
+      note.addEventListener("mouseleave", () => this.options.onNoteHover?.(g._mindNode, note, false));
       g.appendChild(note);
     }
 
@@ -4071,6 +4090,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   async onClose() {
+    this.hideNotePreview();
     this.canvasController?.commitEditor?.();
     await this.save();
     this.canvasController?.destroy();
@@ -4107,6 +4127,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   initViewUI() {
+    this.hideNotePreview();
     this.contentEl.innerHTML = "";
     this.contentEl.style.padding = "0";
 
@@ -4138,6 +4159,7 @@ class CrispMindEditView extends TextFileView {
       },
       onContextMenu: (node, event) => this.showNodeMenu(node, event),
       resolveImage: path => this.resolveImageSource(path),
+      onNoteHover: (node, anchor, entering) => entering ? this.showNotePreview(node, anchor) : this.scheduleHideNotePreview(),
       onOpenImage: path => this.openImagePreview(path),
       onRelinkImage: id => this.pickImage(id),
       onPasteImage: (blob, id) => this.insertPastedImage(blob, id),
@@ -4152,6 +4174,7 @@ class CrispMindEditView extends TextFileView {
       },
       onDeselect: () => {
         if (this.islandEl) this.islandEl.style.display = "none";
+        this.hideNotePreview();
       },
       onZoom: (scale) => {
         if (this.zoomBadge) {
@@ -4991,6 +5014,71 @@ class CrispMindEditView extends TextFileView {
       await leaf.openFile(file, {active: true, eState: hash < 0 ? {} : {subpath: target.slice(hash)}});
       await this.app.workspace.revealLeaf(leaf);
     } catch (error) { new Notice(`无法打开笔记：${error.message}`); }
+  }
+
+  // ---- Note hover preview ----
+  showNotePreview(node, anchor) {
+    window.clearTimeout(this.notePreviewHideTimer);
+    if (!node?.data?.note || !this.viewContainer || this.canvasController?.editor || this.canvasController?.drag?.active) return;
+    if (this.notePreviewNodeId === node.id && this.notePreviewEl?.isConnected) return;
+    this.hideNotePreview();
+    const card = this.viewContainer.createDiv({ cls: "crisp-mind-note-preview" });
+    this.notePreviewEl = card;
+    this.notePreviewNodeId = node.id;
+    card.createDiv({ cls: "crisp-mind-note-preview__title", text: mindNodeLink(node.data.text || "", this.app.vault.getName())?.display || node.data.text });
+    const body = card.createDiv({ cls: "crisp-mind-note-preview__body markdown-rendered" });
+    const sourcePath = this.file?.path || "";
+    const markdown = noteMarkdownForPreview(node.data.note, path => {
+      const file = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
+      return file && isMindImagePath(file.path) ? file.path : null;
+    });
+    if (MarkdownRenderer?.render && Component) {
+      this.notePreviewComponent = new Component();
+      this.notePreviewComponent.load();
+      void MarkdownRenderer.render(this.app, markdown, body, sourcePath, this.notePreviewComponent).then(() => this.placeNotePreview(anchor));
+    } else {
+      body.setText(node.data.note);
+    }
+    card.addEventListener("mouseenter", () => window.clearTimeout(this.notePreviewHideTimer));
+    card.addEventListener("mouseleave", () => this.scheduleHideNotePreview());
+    card.addEventListener("wheel", e => e.stopPropagation(), { passive: true });
+    // Clicking a picture in the card opens it large, like double-clicking a node image.
+    card.addEventListener("click", e => {
+      const embed = e.target.closest?.(".internal-embed");
+      const target = embed?.getAttribute("src");
+      if (!target) return;
+      e.preventDefault(); e.stopPropagation();
+      const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+      if (file && isMindImagePath(file.path)) { this.hideNotePreview(); this.openImagePreview(file.path); }
+    });
+    this.placeNotePreview(anchor);
+  }
+
+  placeNotePreview(anchor) {
+    const card = this.notePreviewEl;
+    if (!card || !anchor?.getBoundingClientRect) return;
+    const pane = this.viewContainer.getBoundingClientRect(), box = anchor.getBoundingClientRect();
+    const width = card.offsetWidth || 320, height = card.offsetHeight || 120;
+    let left = box.right - pane.left + 8;
+    if (left + width > pane.width - 8) left = box.left - pane.left - width - 8;
+    let top = box.top - pane.top - 8;
+    top = Math.max(8, Math.min(pane.height - height - 8, top));
+    card.style.left = `${Math.max(8, left)}px`;
+    card.style.top = `${top}px`;
+  }
+
+  scheduleHideNotePreview() {
+    window.clearTimeout(this.notePreviewHideTimer);
+    this.notePreviewHideTimer = window.setTimeout(() => this.hideNotePreview(), 180);
+  }
+
+  hideNotePreview() {
+    if (typeof window !== "undefined") window.clearTimeout(this.notePreviewHideTimer);
+    this.notePreviewComponent?.unload();
+    this.notePreviewComponent = null;
+    this.notePreviewEl?.remove();
+    this.notePreviewEl = null;
+    this.notePreviewNodeId = null;
   }
 
   // ---- Node images ----
