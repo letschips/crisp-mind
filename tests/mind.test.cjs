@@ -28,6 +28,7 @@ function setupTestContext(publicKeyPem) {
   class Plugin {
     registerView() {}
     registerEvent() {}
+    registerHoverLinkSource(id, info) { (this.hoverSources ||= {})[id] = info; }
     registerDomEvent() {}
     addRibbonIcon() {}
     addCommand() {}
@@ -2004,4 +2005,59 @@ test("export inlines vault images as data URIs so PNG/PDF/SVG do not lose them",
   assert.ok(out.includes('href="data:image/png;base64,AAAA"'));
   assert.ok(!out.includes("app://x/a.png"));
   assert.ok(!out.includes("app://x/gone.png"), "unreadable images are dropped, never left as app:// links");
+});
+
+// ---- Node images, phase 2 (1.7.0) ----
+test("image size presets change the display box and survive a round trip", () => {
+  const { helpers } = setupTestContext();
+  const big = { path: "a.png", width: 2000, height: 1000 };
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox({ ...big, size: "s" }))), { w: 160, h: 80 });
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox(big))), { w: 240, h: 120 });
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox({ ...big, size: "l" }))), { w: 360, h: 180 });
+  assert.equal(helpers.normalizeMindImage({ path: "a.png", size: "l" }).size, "l");
+  assert.equal(helpers.normalizeMindImage({ path: "a.png", size: "m" }).size, undefined, "medium is the default and is not stored");
+  assert.equal(helpers.normalizeMindImage({ path: "a.png", size: "xl" }).size, undefined);
+  const raw = helpers.assembleMindMarkdown(imageDoc(helpers, { path: "a.png", width: 10, height: 10, size: "s" }));
+  assert.equal(helpers.inspectMindSource(raw), null);
+  assert.equal(helpers.parseMindMarkdown(raw).data.root.children[0].data.image.size, "s");
+});
+
+test("resizing images applies to every selected image node in one undo step", () => {
+  const { canvas } = canvasFixture();
+  const [one, , three] = canvas.docData.root.children;
+  canvas.setNodeImage(one.id, { path: "a.png", width: 800, height: 400 });
+  canvas.setNodeImage(three.id, { path: "b.png", width: 800, height: 400 });
+  canvas.setNodeSelection([one.id, canvas.docData.root.children[1].id, three.id], one.id, false);
+  assert.equal(canvas.setSelectedImageSize("l"), true);
+  canvas.calculateLayout();
+  assert.equal(one.data.image.size, "l");
+  assert.equal(three.data.image.size, "l");
+  assert.equal(canvas.docData.root.children[1].data.image, undefined, "nodes without images are untouched");
+  assert.equal(one._img.w, 360);
+  assert.equal(canvas.setSelectedImageSize("l"), false, "no-op does not add history");
+  canvas.undo();
+  assert.equal(canvas.findNode(one.id).data.image.size, undefined);
+  assert.equal(canvas.findNode(three.id).data.image.size, undefined);
+});
+
+test("search also finds nodes by image file name and flags image nodes", () => {
+  const { helpers } = setupTestContext();
+  const root = { id: "r", data: { text: "Root" }, children: [
+    { id: "a", data: { text: "架构", image: { path: "附件/系统总览图.png" } }, children: [] },
+    { id: "b", data: { text: "总览" }, children: [] }
+  ] };
+  const results = helpers.searchMindNodes(root, "总览", "");
+  assert.deepEqual([...results.map(r => r.id)], ["a", "b"]);
+  assert.equal(results[0].image, "附件/系统总览图.png");
+  assert.equal(results[1].image, undefined);
+  assert.equal(helpers.searchMindNodes(root, "附件", "").length, 0, "folders are not searched, only the file name");
+});
+
+test("Crisp Mind registers its hover source so image and note previews follow the ⌘ setting", async () => {
+  const exported = setupTestContext();
+  const PluginClass = exported.default || exported;
+  const plugin = Object.create(PluginClass.prototype);
+  assert.equal(typeof plugin.registerHoverSource, "function");
+  plugin.registerHoverSource();
+  assert.equal(plugin.hoverSources["crisp-mind-view"].defaultMod, true);
 });

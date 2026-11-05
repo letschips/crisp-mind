@@ -448,7 +448,9 @@ function outlineNodeText(text) {
 // size so layout and export never wait for a decode) and as a trailing ![[embed]] on the node's
 // outline line, so Obsidian tracks the attachment (backlinks, orphan checks, rename updates).
 const MIND_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
-const MIND_IMAGE_MAX_W = 240, MIND_IMAGE_MAX_H = 240, MIND_IMAGE_MIN = 24;
+// Display presets: the longest side fits this box. Medium is the default and is never stored.
+const MIND_IMAGE_SIZES = { s: 160, m: 240, l: 360 };
+const MIND_IMAGE_MIN = 24;
 
 function isMindImagePath(path) {
   const ext = String(path || "").split(/[?#]/)[0].split(".").pop().toLowerCase();
@@ -468,6 +470,7 @@ function normalizeMindImage(raw) {
     image.width = Math.round(width);
     image.height = Math.round(height);
   }
+  if (raw.size === "s" || raw.size === "l") image.size = raw.size;
   return image;
 }
 
@@ -491,8 +494,9 @@ function outlineNodeLine(node) {
 
 function mindImageBox(image) {
   const width = Number(image?.width), height = Number(image?.height);
-  if (!(width > 0 && height > 0)) return { w: MIND_IMAGE_MAX_W, h: 160 };
-  const scale = Math.min(1, MIND_IMAGE_MAX_W / width, MIND_IMAGE_MAX_H / height);
+  const max = MIND_IMAGE_SIZES[image?.size] || MIND_IMAGE_SIZES.m;
+  if (!(width > 0 && height > 0)) return { w: max, h: Math.round(max * 2 / 3) };
+  const scale = Math.min(1, max / width, max / height);
   return {
     w: Math.max(MIND_IMAGE_MIN, Math.round(width * scale)),
     h: Math.max(MIND_IMAGE_MIN, Math.round(height * scale))
@@ -583,9 +587,12 @@ function searchMindNodes(rootNode, query, vaultName) {
     const raw = String(node.data?.text || "");
     const display = mindNodeLink(raw, vaultName)?.display || raw;
     const nextPath = [...path, display];
-    const haystack = `${raw}\n${display}`.normalize("NFKC").toLocaleLowerCase();
+    const imagePath = normalizeMindImage(node.data?.image)?.path || "";
+    const imageName = imagePath.split("/").pop();
+    const haystack = `${raw}\n${display}\n${imageName}`.normalize("NFKC").toLocaleLowerCase();
     if (haystack.includes(needle)) {
       results.push({
+        ...(imagePath ? { image: imagePath } : {}),
         id: node.id,
         text: display,
         rawText: raw,
@@ -1668,6 +1675,22 @@ class CrispMindCanvas {
       if (!node) return false;
       if (JSON.stringify(node.data.image || null) === JSON.stringify(normalized)) return false;
       node.data.image = normalized;
+    });
+  }
+
+  setSelectedImageSize(size) {
+    const preset = size === "s" || size === "l" ? size : null;
+    const nodes = this.selectedNodes().filter(node => node.data?.image);
+    if (!nodes.length) return false;
+    return this.transact(() => {
+      let changed = false;
+      for (const node of nodes) {
+        if ((node.data.image.size || null) === preset) continue;
+        if (preset) node.data.image.size = preset;
+        else delete node.data.image.size;
+        changed = true;
+      }
+      return changed;
     });
   }
 
@@ -3009,6 +3032,7 @@ class CrispMindCanvas {
       if (source?.url) this.options.onOpenImage?.(current.data.image.path);
       else if (!this.options.readOnly) this.options.onRelinkImage?.(current.id);
     });
+    if (source?.url) wrap.addEventListener("mouseover", e => this.options.onHoverLink?.(e, path));
     g.appendChild(wrap);
   }
 
@@ -4149,7 +4173,8 @@ class CrispMindEditView extends TextFileView {
           source: VIEW_TYPE_CRISP_MIND,
           hoverParent: this.contentEl,
           targetEl: e.target,
-          linktext: linkTarget
+          linktext: linkTarget,
+          sourcePath: this.file?.path || ""
         });
       }
     });
@@ -4296,7 +4321,8 @@ class CrispMindEditView extends TextFileView {
     const matched = new Set();
     if (query) {
       const markMatches = node => {
-        const ownMatch = displayName(node).normalize("NFKC").toLocaleLowerCase().includes(query);
+        const imageName = (node.data?.image?.path || "").split("/").pop();
+        const ownMatch = `${displayName(node)}\n${imageName}`.normalize("NFKC").toLocaleLowerCase().includes(query);
         // Visit all siblings; short-circuiting here drops later matching branches.
         let childMatch = false;
         for (const child of node.children || []) if (markMatches(child)) childMatch = true;
@@ -4329,6 +4355,10 @@ class CrispMindEditView extends TextFileView {
       }
       const label = row.createEl("button", { cls: "crisp-mind-outline-label", attr: { title: displayName(node) } });
       label.createSpan({ cls: "crisp-mind-outline-text", text: displayName(node) });
+      if (node.data?.image) {
+        const mark = label.createSpan({ cls: "crisp-mind-image-mark", attr: { "aria-label": `图片 ${node.data.image.path.split("/").pop()}` } });
+        setIcon(mark, "image");
+      }
       if (node.data?.note) label.createSpan({ cls: "crisp-mind-outline-note", text: "N" });
       if (node.data?.style?.fill) {
         const swatch = label.createSpan({ cls: "crisp-mind-outline-swatch" });
@@ -4469,11 +4499,18 @@ class CrispMindEditView extends TextFileView {
       noteSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "备注仅支持单节点编辑。" });
     }
 
+    const imageNodes = selected.filter(node => node.data?.image);
+    if (selected.length > 1 && imageNodes.length) {
+      const imageSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
+      imageSection.createDiv({ cls: "crisp-mind-inspector-title", text: `图片尺寸 · ${imageNodes.length} 张` });
+      this.renderImageSizeControl(imageSection, imageNodes);
+    }
     if (selected.length === 1) {
       const imageSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
       imageSection.createDiv({ cls: "crisp-mind-inspector-title", text: "节点图片" });
       const image = primary.data?.image;
       if (image) imageSection.createDiv({ cls: "crisp-mind-inspector-hint", text: this.imageFile(image.path) ? image.path : `找不到 ${image.path}` });
+      if (image) this.renderImageSizeControl(imageSection, [primary]);
       const imageActions = imageSection.createDiv({ cls: "crisp-mind-inspector-actions" });
       imageActions.createEl("button", { text: image ? "更换图片" : "插入图片" }).addEventListener("click", () => this.pickImage(primary.id));
       if (image && this.imageFile(image.path)) imageActions.createEl("button", { text: "查看大图" }).addEventListener("click", () => this.openImagePreview(image.path));
@@ -4503,6 +4540,19 @@ class CrispMindEditView extends TextFileView {
       relationButton.addEventListener("click", () => this.promptRelation(selected));
     } else if (selected.length > 2) {
       annotationSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "建立关系请只选择两个节点。" });
+    }
+  }
+
+  renderImageSizeControl(section, nodes) {
+    const current = new Set(nodes.map(node => node.data.image.size || "m"));
+    const group = section.createDiv({ cls: "crisp-mind-image-size", attr: { role: "group", "aria-label": "图片尺寸" } });
+    for (const [value, label] of [["s", "小"], ["m", "中"], ["l", "大"]]) {
+      const active = current.size === 1 && current.has(value);
+      const button = group.createEl("button", { cls: active ? "is-active" : "", text: label, attr: { "aria-pressed": String(active) } });
+      button.addEventListener("click", () => {
+        this.canvasController.setSelectedImageSize(value);
+        this.renderInspector();
+      });
     }
   }
 
@@ -5053,7 +5103,7 @@ class CrispMindEditView extends TextFileView {
     if (ext === "svg" || ext === "gif" || typeof createImageBitmap !== "function") return asDataUrl(blob);
     let bitmap;
     try { bitmap = await createImageBitmap(blob); } catch (_) { return asDataUrl(blob); }
-    const maxSide = MIND_IMAGE_MAX_W * 3;
+    const maxSide = MIND_IMAGE_SIZES.l * 3;
     const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
     if (scale >= 1) { bitmap.close?.(); return asDataUrl(blob); }
     const canvas = document.createElement("canvas");
@@ -5769,7 +5819,11 @@ class CrispMindSearchModal extends Modal {
         cls: "crisp-mind-search-result",
         attr: { type: "button", "aria-label": `聚焦 ${result.text}` }
       });
-      button.createDiv({ cls: "crisp-mind-search-result__text", text: result.text });
+      const title = button.createDiv({ cls: "crisp-mind-search-result__text", text: result.text });
+      if (result.image) {
+        const mark = title.createSpan({ cls: "crisp-mind-image-mark", attr: { "aria-label": `含图片 ${result.image.split("/").pop()}` } });
+        setIcon(mark, "image");
+      }
       button.createDiv({
         cls: "crisp-mind-search-result__path",
         text: result.path.slice(0, -1).join("  /  ") || "中心主题"
@@ -5918,8 +5972,14 @@ class CrispMindPlugin extends Plugin {
       new Notice("Crisp Mind 的设置文件无法读取，也无法备份。为保护原文件，本次运行不会保存设置。", 0);
     }
   }
+  // Registered sources follow the Page preview setting; by default a preview needs ⌘ / Ctrl.
+  registerHoverSource() {
+    this.registerHoverLinkSource?.(VIEW_TYPE_CRISP_MIND, { display: "Crisp Mind", defaultMod: true });
+  }
+
   async onload() {
     await this.loadSettings();
+    this.registerHoverSource();
 
     this.licenseManager = new CrispMindLicenseManager(this.app, this.settings);
 

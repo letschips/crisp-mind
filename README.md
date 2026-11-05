@@ -28,7 +28,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 - 🔎 **Node Search & Branch Focus**: 按文字搜索节点并显示所属路径；聚焦某个分支时可以只查看相关结构，不影响原始折叠状态，并可从顶部快速返回全图。
 - 🎬 **Presentation Mode**: 将节点保存为讲解顺序，逐步平移、缩放并突出当前节点；每一步支持仅自己可见的备注，播放时用方向键切换、Esc 退出。
 - 🎛️ **Node Style & Notes**: 节点可单独设置形状、填充、文字、边框、字号、字重与对齐；备注随 `.mind.md` 保存，并在画布和大纲显示标记。
-- 🖼️ **Node Images**: 选中节点后 `⌘ / Ctrl + V` 粘贴截图、拖入图片或从库内选择，图片显示在节点文字上方；双击看大图，导出时一并带上。图片按 Obsidian 附件设置保存，并以 `![[图片]]` 写入大纲，改名后导图自动跟随。
+- 🖼️ **Node Images**: 选中节点后 `⌘ / Ctrl + V` 粘贴截图、拖入图片或从库内选择，图片显示在节点文字上方，尺寸分小、中、大三档；双击看大图，按住 `⌘ / Ctrl` 悬停可预览，大纲和搜索能按图片文件名找到节点，导出时一并带上。图片按 Obsidian 附件设置保存，并以 `![[图片]]` 写入大纲，改名后导图自动跟随。
 - 🕸️ **Relations, Boundaries & Summaries**: 支持跨分支关系箭头、分支边界和阶段概要，随 SVG、PNG、PDF 导出，删除节点时自动清理失效引用。
 - 🧭 **Multi-Select & Outline Sidebar**: 使用 `⌘ / Ctrl + 点击` 追加选择，`Shift + 点击` 选择可见范围；大纲侧栏与画布选择、折叠和定位保持同步。
 - ⌨️ **Fluid Keyboard-First Workflow**: 全键盘高频流转，`Tab` 插入子主题、`Enter` 插入同级主题、`Space` 就地编辑、`Delete` 删除分支、`Cmd/Ctrl + Z / Shift + Z` 极速撤销与重做。
