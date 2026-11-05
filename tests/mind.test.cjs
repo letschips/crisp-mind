@@ -135,7 +135,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -1836,4 +1836,172 @@ test("saving a plain note as an editable map creates a clean .mind.md and leaves
   assert.equal(created.length, 1);
   assert.equal(created[0].path, "Notes/项目计划 2.mind.md");
   assert.equal(helpers.inspectMindSource(created[0].content), null);
+});
+
+// ---- Node images (1.6.0) ----
+function imageDoc(helpers, image = { path: "附件/架构图.png", width: 800, height: 400 }) {
+  return { frontmatter: "crisp-mind: true\n", data: { version: "1.1", layout: "logicalStructure", theme: "crisp-obsidian", root: {
+    id: "r", data: { text: "Root" }, children: [
+      { id: "a", data: { text: "架构 [[系统]]", image }, children: [] },
+      { id: "b", data: { text: "Plain" }, children: [] }
+    ] } } };
+}
+
+test("node image round-trips through the outline embed and the JSON block", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown(imageDoc(helpers));
+  assert.ok(raw.includes("- 架构 [[系统]] ![[附件/架构图.png]]\n"), "outline line carries an Obsidian embed");
+  assert.equal(helpers.inspectMindSource(raw), null);
+  const parsed = helpers.parseMindMarkdown(raw);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.data.root.children[0].data.image)), { path: "附件/架构图.png", width: 800, height: 400 });
+  assert.equal(parsed.data.root.children[0].data.text, "架构 [[系统]]");
+});
+
+test("outline parsing splits a trailing image embed from the node text", () => {
+  const { helpers } = setupTestContext();
+  const tree = helpers.markdownOutlineToTree("# R\n- 截图 ![[Pasted image 1.png|300]]\n- 笔记嵌入 ![[某笔记]]\n- ![[only.webp]]\n");
+  assert.equal(tree.children[0].data.text, "截图");
+  assert.equal(tree.children[0].data.image.path, "Pasted image 1.png");
+  assert.equal(tree.children[1].data.text, "笔记嵌入 ![[某笔记]]", "non-image embeds stay in the text");
+  assert.equal(tree.children[1].data.image, undefined);
+  assert.equal(tree.children[2].data.text, "only");
+  assert.equal(tree.children[2].data.image.path, "only.webp");
+});
+
+test("image data is normalized: bad paths and sizes are dropped, not trusted", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(helpers.normalizeMindImage({ path: "a.txt" }), null);
+  assert.equal(helpers.normalizeMindImage({ path: "x]]y.png" }), null);
+  assert.equal(helpers.normalizeMindImage({ path: "../up.png" }), null);
+  assert.equal(helpers.normalizeMindImage("a.png"), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.normalizeMindImage({ path: "/a/b.PNG", width: -1, height: "9" }))), { path: "a/b.PNG" });
+  const repaired = helpers.validateAndRepairTree({ root: { id: "r", data: { text: "R", image: { path: "evil.exe" } }, children: [] } });
+  assert.equal(repaired.root.data.image, undefined);
+});
+
+test("image display box keeps the aspect ratio inside the node limits", () => {
+  const { helpers } = setupTestContext();
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox({ path: "a.png", width: 800, height: 400 }))), { w: 240, h: 120 });
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox({ path: "a.png", width: 100, height: 1000 }))), { w: 24, h: 240 });
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageBox({ path: "a.png", width: 60, height: 40 }))), { w: 60, h: 40 });
+  const unknown = helpers.mindImageBox({ path: "a.png" });
+  assert.ok(unknown.w > 0 && unknown.h > 0);
+});
+
+test("a renamed image makes the outline differ only in the embed and is reported as relinkable", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown(imageDoc(helpers));
+  const renamed = raw.replace("![[附件/架构图.png]]", "![[新名字.png]]");
+  assert.ok(helpers.inspectMindSource(renamed), "still flagged by the strict check");
+  assert.deepEqual(JSON.parse(JSON.stringify(helpers.mindImageRelinks(renamed))), [{ nodeId: "a", target: "新名字.png" }]);
+  assert.equal(helpers.mindImageRelinks(raw), null, "nothing to relink when consistent");
+  // Text edits, removed embeds or added embeds are real conflicts, never auto-healed.
+  assert.equal(helpers.mindImageRelinks(renamed.replace("- Plain", "- Plain edited")), null);
+  assert.equal(helpers.mindImageRelinks(raw.replace(" ![[附件/架构图.png]]", "")), null);
+  assert.equal(helpers.mindImageRelinks(raw.replace("- Plain", "- Plain ![[x.png]]")), null);
+});
+
+test("opening a renamed-image map heals the JSON path and saves instead of going read-only", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown(imageDoc(helpers)).replace("![[附件/架构图.png]]", "![[新名字.png]]");
+  const v = Object.create(helpers.CrispMindEditView.prototype);
+  let saves = 0;
+  v.file = { path: "Maps/a.mind.md" };
+  v.plugin = { isLicensed: () => true };
+  v.app = { metadataCache: { getFirstLinkpathDest: (target) => target === "新名字.png" ? { path: "附件/新名字.png", extension: "png" } : null } };
+  v.initViewUI = () => {};
+  v.requestSave = () => { saves++; };
+  v.setSaveState = () => {};
+  v.setViewData(raw, true);
+  assert.equal(v.readOnly, false);
+  assert.equal(v.sourceWarning, null);
+  assert.equal(v.mindDoc.data.root.children[0].data.image.path, "附件/新名字.png");
+  assert.equal(v.dirty, true);
+  assert.equal(saves, 1);
+  assert.equal(helpers.inspectMindSource(helpers.assembleMindMarkdown(v.mindDoc)), null);
+});
+
+test("an unresolvable renamed image stays read-only and is not rewritten", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown(imageDoc(helpers)).replace("![[附件/架构图.png]]", "![[不存在.png]]");
+  const v = Object.create(helpers.CrispMindEditView.prototype);
+  v.file = { path: "Maps/a.mind.md" };
+  v.plugin = { isLicensed: () => true };
+  v.app = { metadataCache: { getFirstLinkpathDest: () => null } };
+  v.initViewUI = () => {};
+  v.requestSave = () => { throw new Error("must not save"); };
+  v.setViewData(raw, true);
+  assert.equal(v.readOnly, true);
+  assert.ok(v.sourceWarning);
+});
+
+test("image nodes grow to fit the picture and keep geometry out of the file", () => {
+  const { canvas, helpers } = canvasFixture();
+  const plain = canvas.docData.root.children[1];
+  const node = canvas.docData.root.children[0];
+  canvas.calculateLayout();
+  const plainH = plain._h;
+  assert.equal(canvas.setNodeImage(node.id, { path: "a.png", width: 800, height: 400 }), true);
+  canvas.calculateLayout();
+  assert.ok(node._w >= 240 + 16);
+  assert.ok(node._h >= 120 + plainH - 4);
+  assert.ok(node._img && node._img.w === 240 && node._img.h === 120);
+  const text = helpers.assembleMindMarkdown({ data: canvas.docData });
+  assert.ok(!text.includes('"_img"') && !text.includes('"_textY"'));
+  canvas.undo();
+  assert.equal(canvas.findNode(node.id).data.image, undefined, "insert is one undo step");
+  canvas.redo();
+  assert.equal(canvas.removeNodeImage(node.id), true);
+  assert.equal(canvas.findNode(node.id).data.image, undefined);
+});
+
+test("canvas renders an image element, or a missing-image placeholder", () => {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  canvas.setNodeImage(node.id, { path: "a.png", width: 800, height: 400 });
+  canvas.options.resolveImage = path => path === "a.png" ? { url: "app://local/a.png?1" } : null;
+  canvas.calculateLayout();
+  renderCanvasToFakeSvg(canvas, helpers);
+  const all = [];
+  const walk = n => { all.push(n); (n.children || []).forEach(walk); };
+  walk(canvas.nodesGroup);
+  const img = all.find(n => n.tag === "image");
+  assert.ok(img, "image element rendered");
+  assert.equal(img.attrs.href, "app://local/a.png?1");
+  assert.equal(img.attrs["data-image-path"], "a.png");
+  assert.equal(Number(img.attrs.width), 240);
+  // Missing file: placeholder instead of a broken image.
+  canvas.options.resolveImage = () => null;
+  canvas.nodeElements = new Map();
+  canvas.nodesGroup = { children: [], appendChild(c) { this.children.push(c); } };
+  canvas.renderBranch(canvas.docData.root);
+  const all2 = []; const walk2 = n => { all2.push(n); (n.children || []).forEach(walk2); };
+  walk2(canvas.nodesGroup);
+  assert.ok(!all2.some(n => n.tag === "image"));
+  assert.ok(all2.some(n => (n.attrs?.class || "").includes("crisp-mind-image-missing")));
+});
+
+test("copying a branch keeps the image embed and pasting an outline restores it", () => {
+  const { canvas } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  canvas.setNodeImage(node.id, { path: "a.png", width: 10, height: 10 });
+  const text = canvas.copyBranchText(node.id);
+  assert.ok(text.startsWith("- One ![[a.png]]"));
+  canvas.clipboardBranchSnapshot = null;
+  canvas.options.clipboardStore = null;
+  assert.equal(canvas.pasteBranchText("- 外部 ![[b.jpg]]", canvas.docData.root.id), true);
+  const pasted = canvas.docData.root.children.at(-1);
+  assert.equal(pasted.data.text, "外部");
+  assert.equal(pasted.data.image.path, "b.jpg");
+});
+
+test("export inlines vault images as data URIs so PNG/PDF/SVG do not lose them", async () => {
+  const { helpers } = setupTestContext();
+  const svg = '<g><image href="app://x/a.png?1" data-image-path="附件/a &amp; b.png" width="10"></image><image href="app://x/gone.png" data-image-path="gone.png"></image></g>';
+  const seen = [];
+  const out = await helpers.inlineSvgImages(svg, async path => { seen.push(path); return path === "gone.png" ? null : "data:image/png;base64,AAAA"; });
+  assert.deepEqual(seen, ["附件/a & b.png", "gone.png"]);
+  assert.ok(out.includes('href="data:image/png;base64,AAAA"'));
+  assert.ok(!out.includes("app://x/a.png"));
+  assert.ok(!out.includes("app://x/gone.png"), "unreadable images are dropped, never left as app:// links");
 });

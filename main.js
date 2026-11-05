@@ -413,7 +413,11 @@ function markdownOutlineToTree(markdown) {
     }
   }
 
-  const root = { id: generateUid(), data: { text: rootText }, children: [] };
+  const withImage = text => {
+    const split = splitOutlineImage(text);
+    return split.image ? { text: split.text, image: split.image } : { text };
+  };
+  const root = { id: generateUid(), data: withImage(rootText), children: [] };
   if (items.length === 0) {
     return root;
   }
@@ -421,7 +425,7 @@ function markdownOutlineToTree(markdown) {
   const stack = [{ node: root, indent: -1 }];
 
   for (const item of items) {
-    const newNode = { id: generateUid(), data: { text: item.text }, children: [] };
+    const newNode = { id: generateUid(), data: withImage(item.text), children: [] };
     while (stack.length > 1 && stack[stack.length - 1].indent >= item.indent) {
       stack.pop();
     }
@@ -439,11 +443,67 @@ function outlineNodeText(text) {
   return (text || "").replace(/\r\n?|\n/g, " ");
 }
 
+// ---- Node images ----
+// A node image is stored twice on purpose: in the JSON block (source of truth, with the natural
+// size so layout and export never wait for a decode) and as a trailing ![[embed]] on the node's
+// outline line, so Obsidian tracks the attachment (backlinks, orphan checks, rename updates).
+const MIND_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"]);
+const MIND_IMAGE_MAX_W = 240, MIND_IMAGE_MAX_H = 240, MIND_IMAGE_MIN = 24;
+
+function isMindImagePath(path) {
+  const ext = String(path || "").split(/[?#]/)[0].split(".").pop().toLowerCase();
+  return MIND_IMAGE_EXTENSIONS.has(ext);
+}
+
+function normalizeMindImage(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (typeof raw.path !== "string") return null;
+  const path = raw.path.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!path || path.length > 1024 || /[\[\]|\r\n\u2028\u2029]/.test(path) || /(^|\/)\.\.(\/|$)/.test(path)) return null;
+  if (!isMindImagePath(path)) return null;
+  const image = { path };
+  const width = Number(raw.width), height = Number(raw.height);
+  if (typeof raw.width === "number" && typeof raw.height === "number" &&
+      Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && width <= 100000 && height <= 100000) {
+    image.width = Math.round(width);
+    image.height = Math.round(height);
+  }
+  return image;
+}
+
+// Split a trailing image embed off an outline label. Note embeds (![[Note]]) are left in the text.
+function splitOutlineImage(text) {
+  const source = String(text || "");
+  const match = source.match(/(?:^|\s)!\[\[([^\]|\r\n]+)(?:\|[^\]\r\n]*)?\]\]\s*$/);
+  if (!match) return { text: source, image: null };
+  const image = normalizeMindImage({ path: match[1] });
+  if (!image) return { text: source, image: null };
+  let rest = source.slice(0, match.index).trim();
+  if (!rest) rest = image.path.split("/").pop().replace(/\.[^.]+$/, "") || "Topic";
+  return { text: rest, image };
+}
+
+function outlineNodeLine(node) {
+  const text = outlineNodeText(node?.data?.text);
+  const image = normalizeMindImage(node?.data?.image);
+  return image ? `${text} ![[${image.path}]]` : text;
+}
+
+function mindImageBox(image) {
+  const width = Number(image?.width), height = Number(image?.height);
+  if (!(width > 0 && height > 0)) return { w: MIND_IMAGE_MAX_W, h: 160 };
+  const scale = Math.min(1, MIND_IMAGE_MAX_W / width, MIND_IMAGE_MAX_H / height);
+  return {
+    w: Math.max(MIND_IMAGE_MIN, Math.round(width * scale)),
+    h: Math.max(MIND_IMAGE_MIN, Math.round(height * scale))
+  };
+}
+
 function treeToMarkdownOutline(rootNode, level = 0) {
   if (!rootNode || !rootNode.data) return "";
   let out = "";
   if (level === 0) {
-    out += `# ${outlineNodeText(rootNode.data.text) || "Central Topic"}\n`;
+    out += `# ${outlineNodeLine(rootNode) || "Central Topic"}\n`;
     if (Array.isArray(rootNode.children)) {
       for (const child of rootNode.children) {
         out += treeToMarkdownOutline(child, 1);
@@ -453,7 +513,7 @@ function treeToMarkdownOutline(rootNode, level = 0) {
   }
 
   const indent = "  ".repeat(level - 1);
-  out += `${indent}- ${outlineNodeText(rootNode.data.text)}\n`;
+  out += `${indent}- ${outlineNodeLine(rootNode)}\n`;
   if (Array.isArray(rootNode.children)) {
     for (const child of rootNode.children) {
       out += treeToMarkdownOutline(child, level + 1);
@@ -490,6 +550,9 @@ function validateAndRepairTree(docData) {
     const normalizedStyle = normalizeNodeStyle(node.data.style);
     if (normalizedStyle) node.data.style = normalizedStyle;
     else delete node.data.style;
+    const normalizedImage = normalizeMindImage(node.data.image);
+    if (normalizedImage) node.data.image = normalizedImage;
+    else delete node.data.image;
     if (!Array.isArray(node.children)) {
       node.children = [];
     } else {
@@ -726,7 +789,7 @@ function mindNodeLink(text, vaultName) {
 // The fishbone keys matter: calculateLayout only overwrites _x/_y when the layout changes,
 // so unstripped bone/spine coordinates from a previous fishbone pass would stay in .mind.md forever.
 const MIND_GEOMETRY_KEYS = new Set([
-  "_x", "_y", "_w", "_h", "_treeHeight", "_treeWidth", "_lines",
+  "_x", "_y", "_w", "_h", "_treeHeight", "_treeWidth", "_lines", "_img", "_textY",
   "_isUpper", "_spineConnectX", "_spineConnectY",
   "_boneTipX", "_boneTipY", "_boneConnectX", "_boneConnectY"
 ]);
@@ -769,7 +832,7 @@ function inspectMindSource(raw) {
     const flattenTexts = (node) => {
       const result = [];
       const walk = (n, depth) => {
-        result.push(`${depth}:${outlineNodeText(n.data?.text).trim()}`);
+        result.push(`${depth}:${outlineNodeLine(n).trim()}`);
         (n.children || []).forEach(c => walk(c, depth + 1));
       };
       if (node) walk(node, 0);
@@ -779,6 +842,41 @@ function inspectMindSource(raw) {
     if (raw.slice(raw.lastIndexOf(end) + end.length).trim()) return "导图末尾有附加正文，已只读保护";
     return null;
   } catch (error) { return `导图数据损坏：${error.message}`; }
+}
+
+// After an image is renamed, Obsidian rewrites the outline embed but cannot see the JSON block.
+// Report node -> new link target only when that is the sole difference; anything else stays a conflict.
+function mindImageRelinks(raw) {
+  try {
+    const start = "<!-- CRISP-MIND-DATA-START -->", end = "<!-- CRISP-MIND-DATA-END -->";
+    if (typeof raw !== "string" || !raw.includes(start) || !raw.includes(end)) return null;
+    const block = raw.slice(raw.indexOf(start) + start.length, raw.lastIndexOf(end));
+    const match = block.match(/^\s*```crisp-mind\s*\n([\s\S]*?)\n```\s*$/);
+    if (!match) return null;
+    const data = JSON.parse(match[1]);
+    const body = raw.slice(0, raw.indexOf(start)).replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+    const flatten = root => {
+      const rows = [];
+      const walk = (n, depth) => { rows.push({ n, depth }); (n?.children || []).forEach(c => walk(c, depth + 1)); };
+      if (root) walk(root, 0);
+      return rows;
+    };
+    const saved = flatten(data.root), outline = flatten(markdownOutlineToTree(body));
+    if (saved.length !== outline.length) return null;
+    const relinks = [];
+    for (let i = 0; i < saved.length; i++) {
+      const a = saved[i], b = outline[i];
+      if (a.depth !== b.depth) return null;
+      if (outlineNodeText(a.n?.data?.text).trim() !== outlineNodeText(b.n?.data?.text).trim()) return null;
+      const savedImage = normalizeMindImage(a.n?.data?.image), outlineImage = normalizeMindImage(b.n?.data?.image);
+      if (!savedImage !== !outlineImage) return null;
+      if (savedImage && savedImage.path !== outlineImage.path) {
+        if (typeof a.n.id !== "string") return null;
+        relinks.push({ nodeId: a.n.id, target: outlineImage.path });
+      }
+    }
+    return relinks.length ? relinks : null;
+  } catch (_) { return null; }
 }
 
 function assembleMindMarkdown(mindDoc) {
@@ -1562,6 +1660,31 @@ class CrispMindCanvas {
     });
   }
 
+  setNodeImage(id, image) {
+    const normalized = normalizeMindImage(image);
+    if (!normalized) return false;
+    return this.transact(() => {
+      const node = this.findNode(id);
+      if (!node) return false;
+      if (JSON.stringify(node.data.image || null) === JSON.stringify(normalized)) return false;
+      node.data.image = normalized;
+    });
+  }
+
+  removeNodeImage(id) {
+    return this.transact(() => {
+      const node = this.findNode(id);
+      if (!node?.data?.image) return false;
+      delete node.data.image;
+    });
+  }
+
+  // The part of a node that holds its text; an image node keeps the picture above it.
+  nodeTextFrame(node) {
+    if (!node?._img || !Number.isFinite(node._textY)) return node;
+    return { _x: node._x, _y: node._y + node._textY, _w: node._w, _h: node._h - node._textY };
+  }
+
   addRelation(fromId, toId, label = "", color = "") {
     if (fromId === toId || !this.findNode(fromId) || !this.findNode(toId)) return null;
     const existing = (this.docData.relations || []).find(relation =>
@@ -2133,7 +2256,7 @@ class CrispMindCanvas {
     const node = this.findNode(id); if (!node) return "";
     // A readable outline is the clipboard interchange format, not executable HTML.
     const lines = [];
-    const walk = (n, depth) => { lines.push("  ".repeat(depth) + "- " + n.data.text.replace(/\r?\n/g, " ")); (n.children || []).forEach(c => walk(c, depth + 1)); };
+    const walk = (n, depth) => { lines.push("  ".repeat(depth) + "- " + outlineNodeLine(n)); (n.children || []).forEach(c => walk(c, depth + 1)); };
     walk(node, 0);
     const text = lines.join("\n");
     this.clipboardBranchSnapshot = {
@@ -2166,7 +2289,9 @@ class CrispMindCanvas {
         if (++count > 1000) return false;
         const indent = line.match(/^\s*/)[0].replace(/\t/g, "  ").length;
         const label = line.trim().replace(/^(?:[-*+] |\d+[.)] |#{1,6} )/, "").trim(); if (!label) continue;
-        const node = {id: generateUid(), data: {text: normalizeMindLinkText(label, this.options.vaultName)}, children: []};
+        const split = splitOutlineImage(label);
+        const node = {id: generateUid(), data: {text: normalizeMindLinkText(split.text, this.options.vaultName)}, children: []};
+        if (split.image) node.data.image = split.image;
         while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
         if (stack.length > 100) return false;
         stack[stack.length - 1].node.children.push(node); stack.push({node, indent});
@@ -2259,6 +2384,17 @@ class CrispMindCanvas {
         : Math.max(...lines.map(line => [...line].reduce((sum, char) => sum + (/[^\x00-\xff]/.test(char) ? fontSize : fontSize * 0.58), 0)));
       node._w = Math.max(isRoot ? 140 : 100, Math.min(284, measuredWidth + 32));
       node._h = Math.max(isRoot ? 48 : 38, lines.length * lineHeight + 18);
+      if (node.data?.image) {
+        const box = mindImageBox(node.data.image), pad = 8;
+        const textH = Math.max(30, lines.length * lineHeight + 14);
+        node._w = Math.max(node._w, box.w + pad * 2);
+        node._img = { x: Math.round((node._w - box.w) / 2), y: pad, w: box.w, h: box.h };
+        node._textY = pad + box.h;
+        node._h = node._textY + textH;
+      } else {
+        delete node._img;
+        delete node._textY;
+      }
       children(node).forEach(c => measure(c));
       node._treeHeight = Math.max(node._h, children(node).reduce((n,c) => n + c._treeHeight, 0) + Math.max(0, children(node).length - 1) * V_GAP);
       node._treeWidth = Math.max(node._w, children(node).reduce((n,c) => n + c._treeWidth, 0) + Math.max(0, children(node).length - 1) * H_GAP);
@@ -2591,8 +2727,10 @@ class CrispMindCanvas {
     const descendantTaskProgress = this.taskProgressMap?.get(node.id) || getDescendantTaskProgress(node);
     const branchColor = this.branchColorMap?.get(node.id)?.color || "";
 
+    const imageSource = node._img ? (this.options.resolveImage?.(node.data.image.path) || null) : null;
+    const hideWhileEditing = this.editorNodeId === node.id && !node._img;
     const signature = JSON.stringify([
-      node.data, node._w, node._h, node._lines, isSelected, isPrimarySelected, isRoot, this.theme,
+      node.data, node._w, node._h, node._lines, imageSource?.url || "", isSelected, isPrimarySelected, isRoot, this.theme,
       node.children?.length, isCompleted, this.isNodeExpanded(node), branchColor,
       descendantTaskProgress.completed, descendantTaskProgress.total
     ]);
@@ -2601,7 +2739,7 @@ class CrispMindCanvas {
     const cached = this.nodeElements ? this.nodeElements.get(node.id) : null;
     if (cached && cached._signature === signature) {
       cached._mindNode = node;
-      cached.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
+      cached.style.visibility = hideWhileEditing ? "hidden" : "";
       cached.setAttribute("transform", `translate(${node._x}, ${node._y})`);
       cached.classList.toggle("is-presentation-current", currentPresentationNodeId === node.id);
       cached.classList.toggle("is-presentation-dimmed", !!currentPresentationNodeId && currentPresentationNodeId !== node.id);
@@ -2612,7 +2750,7 @@ class CrispMindCanvas {
     cached?.remove();
     const g = this.document.createElementNS("http://www.w3.org/2000/svg", "g");
     g._mindNode = node; g._signature = signature;
-    g.style.visibility = this.editorNodeId === node.id ? "hidden" : "";
+    g.style.visibility = hideWhileEditing ? "hidden" : "";
     g.classList.add("crisp-mind-node");
     if (isSelected) g.classList.add("is-selected");
     if (isPrimarySelected) g.classList.add("is-primary-selected");
@@ -2627,7 +2765,8 @@ class CrispMindCanvas {
     titleEl.textContent = node.data.text;
     g.appendChild(titleEl);
 
-    const shape = nodeStyle.shape || "rounded";
+    // A picture does not fit inside an ellipse; image nodes fall back to a rounded box.
+    const shape = node._img && nodeStyle.shape === "ellipse" ? "rounded" : (nodeStyle.shape || "rounded");
     let shapeEl;
     if (shape === "ellipse") {
       shapeEl = this.document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
@@ -2644,7 +2783,7 @@ class CrispMindCanvas {
       const radius = shape === "rectangle"
         ? 0
         : shape === "pill"
-          ? node._h / 2
+          ? (node._img ? Math.min(node._h / 2, 22) : node._h / 2)
           : this.theme.borderRadius || 8;
       shapeEl.setAttribute("rx", radius);
       shapeEl.setAttribute("ry", radius);
@@ -2665,6 +2804,9 @@ class CrispMindCanvas {
       : (this.theme.nodeShadow || "drop-shadow(0 2px 6px rgba(0, 0, 0, 0.05))");
     g.appendChild(shapeEl);
 
+    if (node._img) this.renderNodeImage(g, node, imageSource);
+    const textCenterY = node._img ? node._textY + (node._h - node._textY) / 2 : node._h / 2;
+
     // Text element
     const textEl = this.document.createElementNS("http://www.w3.org/2000/svg", "text");
     const align = nodeStyle.align || "center";
@@ -2674,7 +2816,7 @@ class CrispMindCanvas {
     const lineHeight = Math.max(18, Math.round(fontSize * 1.42));
     const textColor = nodeStyle.textColor || (isRoot ? "#ffffff" : this.theme.textColor);
     textEl.setAttribute("x", textX);
-    textEl.setAttribute("y", node._h / 2);
+    textEl.setAttribute("y", textCenterY);
     textEl.setAttribute("text-anchor", textAnchor);
     textEl.setAttribute("dominant-baseline", "central");
     textEl.setAttribute("fill", textColor);
@@ -2709,7 +2851,7 @@ class CrispMindCanvas {
     (node._lines || [rawText]).forEach((line, index, lines) => {
       const span = this.document.createElementNS("http://www.w3.org/2000/svg", "tspan");
       span.setAttribute("x", textX);
-      span.setAttribute("y", node._h / 2 + (index - (lines.length - 1) / 2) * lineHeight);
+      span.setAttribute("y", textCenterY + (index - (lines.length - 1) / 2) * lineHeight);
       span.textContent = line;
       textEl.appendChild(span);
     });
@@ -2814,6 +2956,60 @@ class CrispMindCanvas {
       g.appendChild(fold);
     }
     this.nodesGroup.appendChild(g);
+  }
+
+  renderNodeImage(g, node, source) {
+    const svgNS = "http://www.w3.org/2000/svg";
+    const box = node._img, path = node.data.image.path;
+    const wrap = this.document.createElementNS(svgNS, "g");
+    wrap.setAttribute("class", source?.url ? "crisp-mind-node-image" : "crisp-mind-node-image crisp-mind-image-missing");
+    wrap.setAttribute("data-image-wrap", path);
+    if (source?.url) {
+      this.imageClipPrefix = this.imageClipPrefix || `crisp-mind-clip-${generateUid()}`;
+      const clipId = `${this.imageClipPrefix}-${node.id}`;
+      const clip = this.document.createElementNS(svgNS, "clipPath");
+      clip.setAttribute("id", clipId);
+      const clipRect = this.document.createElementNS(svgNS, "rect");
+      clipRect.setAttribute("x", box.x); clipRect.setAttribute("y", box.y);
+      clipRect.setAttribute("width", box.w); clipRect.setAttribute("height", box.h);
+      clipRect.setAttribute("rx", 5); clipRect.setAttribute("ry", 5);
+      clip.appendChild(clipRect);
+      const image = this.document.createElementNS(svgNS, "image");
+      image.setAttribute("href", source.url);
+      image.setAttribute("data-image-path", path);
+      image.setAttribute("x", box.x); image.setAttribute("y", box.y);
+      image.setAttribute("width", box.w); image.setAttribute("height", box.h);
+      image.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      image.setAttribute("clip-path", `url(#${clipId})`);
+      wrap.append(clip, image);
+    } else {
+      const rect = this.document.createElementNS(svgNS, "rect");
+      rect.setAttribute("x", box.x); rect.setAttribute("y", box.y);
+      rect.setAttribute("width", box.w); rect.setAttribute("height", box.h);
+      rect.setAttribute("rx", 5); rect.setAttribute("ry", 5);
+      rect.setAttribute("fill", "none");
+      rect.setAttribute("stroke", this.theme.borderColor || "#808080");
+      rect.setAttribute("stroke-dasharray", "4 3");
+      const label = this.document.createElementNS(svgNS, "text");
+      label.setAttribute("x", box.x + box.w / 2); label.setAttribute("y", box.y + box.h / 2);
+      label.setAttribute("text-anchor", "middle"); label.setAttribute("dominant-baseline", "central");
+      label.setAttribute("font-size", "12"); label.setAttribute("fill", this.theme.textColor || "#808080");
+      label.setAttribute("opacity", "0.7");
+      label.textContent = "图片丢失 · 双击重新选择";
+      wrap.append(rect, label);
+    }
+    const title = this.document.createElementNS(svgNS, "title");
+    title.textContent = source?.url ? `${path}\n双击查看大图` : `找不到 ${path}`;
+    wrap.appendChild(title);
+    // Double-clicking the picture opens it (or relinks it); the text below still edits the node.
+    wrap.addEventListener("dblclick", e => {
+      e.stopPropagation();
+      if (this.presentationActive && !source?.url) return;
+      const current = g._mindNode;
+      if (source?.url) this.options.onOpenImage?.(current.data.image.path);
+      else if (!this.options.readOnly) this.options.onRelinkImage?.(current.id);
+    });
+    g.appendChild(wrap);
   }
 
   subtreeBounds(node) {
@@ -3176,7 +3372,7 @@ class CrispMindCanvas {
     // Edit the node itself: reserve exactly its existing bounds and move the
     // canvas into view, instead of widening/clamping an unrelated overlay.
     if (!Number.isFinite(node._w)) this.calculateLayout();
-    const frame = inlineEditorFrame(node, this.scale, this.translateX, this.translateY, this.container.clientWidth, this.container.clientHeight);
+    const frame = inlineEditorFrame(this.nodeTextFrame(node), this.scale, this.translateX, this.translateY, this.container.clientWidth, this.container.clientHeight);
     this.scale = frame.scale;
     this.translateX = frame.translateX; this.translateY = frame.translateY;
     if (this.viewportGroup) this.updateTransform();
@@ -3188,7 +3384,7 @@ class CrispMindCanvas {
       padding: `0 ${Math.max(4, 14 * this.scale)}px`
     });
     const nodeEl = this.nodeElements?.get(node.id);
-    if (nodeEl) nodeEl.style.visibility = "hidden";
+    if (nodeEl && !node._img) nodeEl.style.visibility = "hidden";
     const labelEl = this.nodeElements?.get(node.id)?.querySelector(".crisp-mind-node-label");
     if (labelEl) labelEl.style.visibility = "hidden";
     this.editorNodeId = node.id;
@@ -3278,10 +3474,11 @@ class CrispMindCanvas {
     const fontSize = (normalizeNodeStyle(node.data?.style)?.fontSize || (node.id === this.docData.root.id ? 14 : 13)) * this.scale;
     input.style.fontSize = `${fontSize}px`;
     input.style.padding = `${Math.max(3, 8 * this.scale)}px ${Math.max(4, 14 * this.scale)}px`;
-    const top = node._y * this.scale + this.translateY;
-    const available = Math.max(node._h * this.scale, (this.container.clientHeight || 600) - top - 16);
+    const frame = this.nodeTextFrame(node);
+    const top = frame._y * this.scale + this.translateY;
+    const available = Math.max(frame._h * this.scale, (this.container.clientHeight || 600) - top - 16);
     input.style.height = "auto";
-    const wanted = Math.max(node._h * this.scale, (input.scrollHeight || 0) + 4);
+    const wanted = Math.max(frame._h * this.scale, (input.scrollHeight || 0) + 4);
     input.style.height = `${Math.min(available, wanted)}px`;
     input.style.overflowY = wanted > available ? "auto" : "hidden";
   }
@@ -3338,6 +3535,8 @@ class CrispMindCanvas {
     const id = this.selectedNodeId;
     try {
       if (action === "paste") {
+        // Only await the image probe when this canvas can take images; text paste stays synchronous.
+        if (this.options.onPasteImage && await this.pasteClipboardImage(id)) return;
         const text = await this.window.navigator.clipboard.readText();
         if (this.destroyed || this.editor) return;
         if (!this.pasteBranchText(text, id || this.docData.root.id)) new Notice("没有可粘贴的节点，或内容超过限制");
@@ -3360,6 +3559,25 @@ class CrispMindCanvas {
         new Notice(removed ? "分支已剪切，可撤销" : action === "cut" ? "分支已复制；原节点状态已变化或不可删除，未剪切" : "分支已复制，粘贴到其他导图可保留换行、样式与备注");
       }
     } catch (error) { new Notice(`剪贴板操作失败：${error.message}`); }
+  }
+
+  // A screenshot or a browser "Copy Image" has image data and no plain text. Copied Finder files
+  // also carry their icon as an image, but always with the file name as text: those stay text.
+  async pasteClipboardImage(id) {
+    const clipboard = this.window.navigator.clipboard;
+    if (!this.options.onPasteImage || typeof clipboard?.read !== "function") return false;
+    let blob = null;
+    try {
+      for (const item of await clipboard.read()) {
+        if (item.types.includes("text/plain")) continue;
+        const type = item.types.find(t => /^image\//.test(t));
+        if (type) { blob = await item.getType(type); break; }
+      }
+    } catch (_) { return false; }
+    if (!blob || this.destroyed || this.editor) return false;
+    if (!id) { new Notice("先选中一个节点，再粘贴图片"); return true; }
+    await this.options.onPasteImage(blob, id);
+    return true;
   }
 
   bindEvents() {
@@ -3405,6 +3623,30 @@ class CrispMindCanvas {
       this.cancelDrag();
     });
     this.listen(this.window, "pointercancel", () => this.cancelDrag());
+    const imageDropTarget = e => {
+      if (this.options.readOnly || this.presentationActive || this.editor || !this.options.onDropImage) return null;
+      const types = [...(e.dataTransfer?.types || [])];
+      if (!types.includes("Files") && !this.options.isImageDrag?.()) return null;
+      const el = e.target?.closest?.("[data-node-id]");
+      return el && this.nodesGroup.contains(el) ? el : null;
+    };
+    const clearImageDrop = () => this.nodesGroup.querySelectorAll?.("[data-drop=image]").forEach(el => el.removeAttribute("data-drop"));
+    this.listen(this.container, "dragover", e => {
+      const el = imageDropTarget(e);
+      clearImageDrop();
+      if (!el) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+      el.setAttribute("data-drop", "image");
+    });
+    this.listen(this.container, "dragleave", e => { if (!this.container.contains(e.relatedTarget)) clearImageDrop(); });
+    this.listen(this.container, "drop", e => {
+      const el = imageDropTarget(e);
+      clearImageDrop();
+      if (!el) return;
+      e.preventDefault(); e.stopPropagation();
+      void this.options.onDropImage(e.dataTransfer, el.dataset.nodeId);
+    });
     this.listen(this.window, "blur", () => { this.isPanning = false; this.cancelDrag(); });
     this.listen(this.window, "keydown", e => { if (e.key === "Escape" && this.drag) { e.preventDefault(); this.cancelDrag(); } });
     this.listen(this.container, "mousedown", (e) => {
@@ -3633,6 +3875,16 @@ class CrispMindEditView extends TextFileView {
     } catch (_) {
       this.mindDoc = parseMindMarkdown("");
     }
+    let healedImages = false;
+    if (this.sourceWarning && !isFatalCorrupt && !this.baseReadOnly && this.isLicensed()) {
+      const healed = this.healRenamedImages(data);
+      if (healed) {
+        this.mindDoc = healed;
+        this.sourceWarning = null;
+        this.readOnly = false;
+        healedImages = true;
+      }
+    }
     if (!this.canvasController) {
       this.initViewUI();
     } else {
@@ -3640,6 +3892,33 @@ class CrispMindEditView extends TextFileView {
       this.canvasController = null;
       this.initViewUI();
     }
+    if (healedImages) {
+      // The outline already points at the renamed file; write the JSON block to match.
+      this.dirty = true;
+      this.setSaveState("图片已改名，正在同步导图");
+      this.requestSave();
+    }
+  }
+
+  healRenamedImages(data) {
+    const relinks = mindImageRelinks(data);
+    if (!relinks) return null;
+    let doc;
+    try { doc = parseMindMarkdown(data); } catch (_) { return null; }
+    const find = (n, id) => {
+      if (!n) return null;
+      if (n.id === id) return n;
+      for (const c of n.children || []) { const hit = find(c, id); if (hit) return hit; }
+      return null;
+    };
+    for (const { nodeId, target } of relinks) {
+      const node = find(doc.data.root, nodeId);
+      const file = this.app?.metadataCache?.getFirstLinkpathDest?.(target, this.file?.path || "");
+      if (!node?.data?.image || !file?.path || !isMindImagePath(file.path)) return null;
+      node.data.image = normalizeMindImage({ ...node.data.image, path: file.path });
+      if (!node.data.image) return null;
+    }
+    return doc;
   }
 
   setSaveState(message, error = false) {
@@ -3834,6 +4113,12 @@ class CrispMindEditView extends TextFileView {
         this.notifyPulseContribution();
       },
       onContextMenu: (node, event) => this.showNodeMenu(node, event),
+      resolveImage: path => this.resolveImageSource(path),
+      onOpenImage: path => this.openImagePreview(path),
+      onRelinkImage: id => this.pickImage(id),
+      onPasteImage: (blob, id) => this.insertPastedImage(blob, id),
+      onDropImage: (dataTransfer, id) => this.insertDroppedImage(dataTransfer, id),
+      isImageDrag: () => !!this.draggedVaultImage(),
       onSelectNode: (node, screenCoord) => {
         if (this.inspectorOpen) {
           if (this.islandEl) this.islandEl.style.display = "none";
@@ -4184,6 +4469,18 @@ class CrispMindEditView extends TextFileView {
       noteSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "备注仅支持单节点编辑。" });
     }
 
+    if (selected.length === 1) {
+      const imageSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
+      imageSection.createDiv({ cls: "crisp-mind-inspector-title", text: "节点图片" });
+      const image = primary.data?.image;
+      if (image) imageSection.createDiv({ cls: "crisp-mind-inspector-hint", text: this.imageFile(image.path) ? image.path : `找不到 ${image.path}` });
+      const imageActions = imageSection.createDiv({ cls: "crisp-mind-inspector-actions" });
+      imageActions.createEl("button", { text: image ? "更换图片" : "插入图片" }).addEventListener("click", () => this.pickImage(primary.id));
+      if (image && this.imageFile(image.path)) imageActions.createEl("button", { text: "查看大图" }).addEventListener("click", () => this.openImagePreview(image.path));
+      if (image) imageActions.createEl("button", { cls: "is-danger", text: "移除图片" }).addEventListener("click", () => { controller.removeNodeImage(primary.id); this.renderInspector(); });
+      if (!image) imageSection.createDiv({ cls: "crisp-mind-inspector-hint", text: "也可以选中节点后按 ⌘V 粘贴截图，或把图片拖到节点上。" });
+    }
+
     const annotationSection = this.inspectorEl.createDiv({ cls: "crisp-mind-inspector-section" });
     annotationSection.createDiv({ cls: "crisp-mind-inspector-title", text: "结构与标注" });
     const actions = annotationSection.createDiv({ cls: "crisp-mind-inspector-actions" });
@@ -4491,6 +4788,11 @@ class CrispMindEditView extends TextFileView {
     menu.addItem(i => i.setTitle(summary ? "编辑概要" : "添加概要").setIcon("panel-top-dashed").onClick(() => this.promptSummary(node, summary)));
     if (c.selectedNodeIds.size === 2) menu.addItem(i => i.setTitle("为选中节点建立关系").setIcon("git-branch").onClick(() => this.promptRelation(c.selectedNodes())));
     menu.addItem(i => i.setTitle("设置 / 更换笔记链接").setIcon("link").onClick(() => this.editNodeLink(node.id)));
+    menu.addItem(i => i.setTitle(node.data?.image ? "更换图片…" : "插入图片…").setIcon("image-plus").onClick(() => this.pickImage(node.id)));
+    if (node.data?.image) {
+      if (this.imageFile(node.data.image.path)) menu.addItem(i => i.setTitle("查看大图").setIcon("maximize-2").onClick(() => this.openImagePreview(node.data.image.path)));
+      menu.addItem(i => i.setTitle("移除图片").setIcon("image-off").onClick(() => c.removeNodeImage(node.id)));
+    }
     const linkedNote = mindNodeLink(node.data?.text || "", this.app.vault.getName());
     if (linkedNote) {
       menu.addItem(i => i.setTitle("打开关联笔记").setIcon("file-text").onClick(() => {
@@ -4525,6 +4827,9 @@ class CrispMindEditView extends TextFileView {
       menu.addItem(i => i.setTitle("在右侧分屏打开").setIcon("panel-right").onClick(() => {
         void this.openLinkedNote(linkedNote.target, "split");
       }));
+    }
+    if (node.data?.image && this.imageFile(node.data.image.path)) {
+      menu.addItem(i => i.setTitle("查看大图").setIcon("maximize-2").onClick(() => this.openImagePreview(node.data.image.path)));
     }
     if (node.children?.length) {
       menu.addItem(i => i.setTitle(c.isNodeExpanded(node) ? "折叠分支 · F" : "展开分支 · F")
@@ -4636,6 +4941,127 @@ class CrispMindEditView extends TextFileView {
       await leaf.openFile(file, {active: true, eState: hash < 0 ? {} : {subpath: target.slice(hash)}});
       await this.app.workspace.revealLeaf(leaf);
     } catch (error) { new Notice(`无法打开笔记：${error.message}`); }
+  }
+
+  // ---- Node images ----
+  imageFile(path) {
+    const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+    return file && typeof file.extension === "string" && isMindImagePath(file.path) ? file : null;
+  }
+
+  resolveImageSource(path) {
+    const file = this.imageFile(path);
+    return file ? { url: this.app.vault.getResourcePath(file) } : null;
+  }
+
+  readImageSize(url) {
+    return new Promise(resolve => {
+      const img = new Image();
+      const timer = window.setTimeout(() => resolve(null), 8000);
+      img.onload = () => { window.clearTimeout(timer); resolve(img.naturalWidth > 0 ? { width: img.naturalWidth, height: img.naturalHeight } : null); };
+      img.onerror = () => { window.clearTimeout(timer); resolve(null); };
+      img.src = url;
+    });
+  }
+
+  async attachImageFile(nodeId, file) {
+    const c = this.canvasController, sourceFile = this.file;
+    if (!c || c.options.readOnly || !file) return false;
+    const size = await this.readImageSize(this.app.vault.getResourcePath(file));
+    if (this.canvasController !== c || this.file !== sourceFile || c.destroyed || !c.findNode(nodeId)) {
+      new Notice("导图已切换，图片未插入");
+      return false;
+    }
+    const changed = c.setNodeImage(nodeId, size ? { path: file.path, ...size } : { path: file.path });
+    if (changed) c.selectNode(nodeId);
+    return changed;
+  }
+
+  async saveImageAttachment(buffer, fileName) {
+    if (!this.file) throw Error("导图尚未保存到仓库");
+    const path = await this.app.fileManager.getAvailablePathForAttachment(fileName, this.file.path);
+    return this.app.vault.createBinary(path, buffer);
+  }
+
+  async insertPastedImage(blob, nodeId) {
+    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    try {
+      const ext = ({ "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg", "image/bmp": "bmp", "image/avif": "avif" })[blob.type] || "png";
+      const d = new Date(), pad = n => String(n).padStart(2, "0");
+      const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+      const file = await this.saveImageAttachment(await blob.arrayBuffer(), `Pasted image ${stamp}.${ext}`);
+      await this.attachImageFile(nodeId, file);
+    } catch (error) { new Notice(`粘贴图片失败：${error.message}`); }
+  }
+
+  draggedVaultImage() {
+    const drag = this.app.dragManager?.draggable;
+    if (drag?.type === "file" && drag.file && isMindImagePath(drag.file.path)) return drag.file;
+    if (drag?.type === "files") return (drag.files || []).find(f => f && isMindImagePath(f.path)) || null;
+    return null;
+  }
+
+  async insertDroppedImage(dataTransfer, nodeId) {
+    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    try {
+      const vaultFile = this.draggedVaultImage();
+      if (vaultFile) { await this.attachImageFile(nodeId, vaultFile); return; }
+      const external = [...(dataTransfer?.files || [])].find(f => /^image\//.test(f.type) || isMindImagePath(f.name));
+      if (!external) { new Notice("只能拖入图片文件"); return; }
+      const name = isMindImagePath(external.name) ? external.name : `${external.name || "image"}.png`;
+      const file = await this.saveImageAttachment(await external.arrayBuffer(), name);
+      await this.attachImageFile(nodeId, file);
+    } catch (error) { new Notice(`插入图片失败：${error.message}`); }
+  }
+
+  pickImage(nodeId) {
+    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    const owner = this;
+    const files = this.app.vault.getFiles()
+      .filter(file => isMindImagePath(file.path))
+      .sort((a, b) => (b.stat?.mtime || 0) - (a.stat?.mtime || 0));
+    if (!files.length) { new Notice("仓库里还没有图片；可以直接粘贴截图或拖入图片"); return; }
+    const picker = new (class extends FuzzySuggestModal {
+      getItems() { return files; }
+      getItemText(file) { return file.path; }
+      onChooseItem(file) { void owner.attachImageFile(nodeId, file); }
+    })(this.app);
+    picker.setPlaceholder("搜索图片名称或路径（也可以直接粘贴截图、拖入图片）");
+    picker.open();
+  }
+
+  openImagePreview(path) {
+    const file = this.imageFile(path);
+    if (!file) { new Notice(`找不到图片：${path}`); return; }
+    new CrispMindImageModal(this.app, file).open();
+  }
+
+  // Export reads the file itself; large photos are scaled to what a 3x export can show.
+  async loadImageDataUrl(path) {
+    const file = this.imageFile(path);
+    if (!file) return null;
+    const buffer = await this.app.vault.readBinary(file);
+    const ext = file.extension.toLowerCase();
+    const mime = ({ jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", bmp: "image/bmp", avif: "image/avif" })[ext] || "image/png";
+    const blob = new Blob([buffer], { type: mime });
+    const asDataUrl = b => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(b);
+    });
+    if (ext === "svg" || ext === "gif" || typeof createImageBitmap !== "function") return asDataUrl(blob);
+    let bitmap;
+    try { bitmap = await createImageBitmap(blob); } catch (_) { return asDataUrl(blob); }
+    const maxSide = MIND_IMAGE_MAX_W * 3;
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1) { bitmap.close?.(); return asDataUrl(blob); }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    return mime === "image/jpeg" ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
   }
 
   editNodeLink(id) {
@@ -4751,6 +5177,32 @@ function exportBackgroundColor(theme) {
   return theme?.solidBackground || theme?.nodeBackground || "#ffffff";
 }
 
+// The canvas shows vault images through app:// resource URLs. A standalone SVG, and an SVG drawn
+// into a canvas for PNG/PDF, cannot load those, so every image is swapped for a data URI. Images
+// that cannot be read lose their href instead of leaking a local URL into the export.
+async function inlineSvgImages(svgString, load) {
+  const decode = value => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const tags = svgString.match(/<image\b[^>]*>/g) || [];
+  const cache = new Map();
+  let out = svgString;
+  for (const tag of tags) {
+    const pathMatch = tag.match(/\sdata-image-path="([^"]*)"/);
+    let replacement = tag.replace(/\s(?:xlink:)?href="[^"]*"/g, "");
+    if (pathMatch) {
+      const path = decode(pathMatch[1]);
+      if (!cache.has(path)) {
+        let uri = null;
+        try { uri = await load(path); } catch (_) { uri = null; }
+        cache.set(path, typeof uri === "string" && uri.startsWith("data:") ? uri : null);
+      }
+      const uri = cache.get(path);
+      if (uri) replacement = replacement.replace(/^<image\b/, `<image href="${uri}"`);
+    }
+    out = out.replace(tag, () => replacement);
+  }
+  return out;
+}
+
 class CrispMindExporter {
   constructor(view) {
     this.view = view;
@@ -4850,6 +5302,12 @@ class CrispMindExporter {
     return this.withCleanRender(() => this.buildSvg({ padding, transparent }));
   }
 
+  async toSvgWithImages(options = {}) {
+    const result = this.toSvg(options);
+    if (!/<image\b/.test(result.svgString) || typeof this.view?.loadImageDataUrl !== "function") return result;
+    return { ...result, svgString: await inlineSvgImages(result.svgString, path => this.view.loadImageDataUrl(path)) };
+  }
+
   buildSvg({ padding = 40, transparent = false } = {}) {
     const bbox = this.getBoundingBox(padding);
     const theme = this.controller?.theme || {};
@@ -4899,7 +5357,7 @@ class CrispMindExporter {
   }
 
   async toPng({ scale = 2, transparent = false, padding = 40 } = {}) {
-    const { svgString, width, height } = this.toSvg({ padding, transparent });
+    const { svgString, width, height } = await this.toSvgWithImages({ padding, transparent });
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
@@ -4933,7 +5391,7 @@ class CrispMindExporter {
   }
 
   async toPdf({ padding = 40 } = {}) {
-    const { svgString, width, height } = this.toSvg({ padding, transparent: false });
+    const { svgString, width, height } = await this.toSvgWithImages({ padding, transparent: false });
     const scale = 2;
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(width * scale);
@@ -5142,7 +5600,7 @@ class CrispMindExportModal extends Modal {
       dataBuffer = res.arrayBuffer;
     } else if (format === "svg") {
       mimeType = "image/svg+xml";
-      const res = this.exporter.toSvg({ transparent: this.transparent });
+      const res = await this.exporter.toSvgWithImages({ transparent: this.transparent });
       dataBuffer = new TextEncoder().encode(res.svgString).buffer;
     }
 
@@ -5174,6 +5632,40 @@ class CrispMindExportModal extends Modal {
 /* ==========================================================================
    Search, Branch Focus & Presentation UI
    ========================================================================== */
+
+class CrispMindImageModal extends Modal {
+  constructor(app, file) {
+    super(app);
+    this.file = file;
+  }
+
+  onOpen() {
+    this.modalEl.addClass("crisp-mind-image-modal-shell");
+    this.contentEl.addClass("crisp-mind-image-modal");
+    this.titleEl.setText(this.file.name);
+    const stage = this.contentEl.createDiv({ cls: "crisp-mind-image-stage" });
+    const img = stage.createEl("img", { attr: { src: this.app.vault.getResourcePath(this.file), alt: this.file.name, draggable: "false" } });
+    let scale = 1;
+    const apply = () => { img.style.transform = `scale(${scale})`; };
+    stage.addEventListener("wheel", e => {
+      e.preventDefault();
+      scale = Math.min(8, Math.max(0.2, scale * Math.exp(-e.deltaY * 0.002)));
+      apply();
+    }, { passive: false });
+    img.addEventListener("dblclick", () => { scale = 1; apply(); });
+    const actions = this.contentEl.createDiv({ cls: "crisp-mind-image-actions" });
+    actions.createSpan({ cls: "crisp-mind-image-hint", text: "滚轮缩放 · 双击复原 · Esc 关闭" });
+    actions.createEl("button", { text: "在新标签页打开" }).addEventListener("click", async () => {
+      this.close();
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(this.file, { active: true });
+    });
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
 
 class CrispMindPromptModal extends Modal {
   constructor(app, options = {}) {

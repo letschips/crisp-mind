@@ -1738,3 +1738,59 @@ body .modal:has(> .crisp-mind-export-modal) > .modal-header:has(.modal-title:emp
     max-height: 56vh;
   }
 }
+
+/* --- Node images (1.6.0) --- */
+.crisp-mind-node-image {
+  cursor: zoom-in;
+}
+
+.crisp-mind-image-missing {
+  cursor: pointer;
+}
+
+body .modal.crisp-mind-image-modal-shell {
+  background: var(--background-primary) !important;
+  width: min(1100px, calc(100vw - 48px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  border-radius: 18px;
+}
+
+.crisp-mind-image-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.crisp-mind-image-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 200px;
+  max-height: calc(100dvh - 200px);
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+
+.crisp-mind-image-stage img {
+  max-width: 100%;
+  max-height: calc(100dvh - 200px);
+  object-fit: contain;
+  transform-origin: center center;
+  transition: transform 80ms ease-out;
+  user-select: none;
+}
+
+.crisp-mind-image-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.crisp-mind-image-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
