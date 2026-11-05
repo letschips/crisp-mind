@@ -2095,3 +2095,16 @@ test("hovering the note badge reports enter and leave for that node", () => {
   badge.find(l => l.type === "mouseleave").fn({});
   assert.deepEqual(JSON.parse(JSON.stringify(events)), [[node.id, true], [node.id, false]]);
 });
+
+// Regression (2026-11-05, user report): 1.8.0 listened for hover on the note badge, but an older
+// rule kept `pointer-events: none` on it, so a real mouse never reached the badge.
+test("styles let the note badge and node images receive the pointer", () => {
+  const css = fs.readFileSync(path.join(__dirname, "../styles.css"), "utf8");
+  const rules = selector => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(m => m[1].split(",").some(s => s.trim() === selector))
+    .map(m => m[2]);
+  for (const selector of [".crisp-mind-note-indicator", ".crisp-mind-node-image"]) {
+    const last = rules(selector).map(body => body.match(/pointer-events:\s*([^;]+)/)?.[1]?.trim()).filter(Boolean).pop();
+    assert.notEqual(last, "none", `${selector} must not disable pointer events`);
+  }
+});
