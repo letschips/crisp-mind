@@ -31,6 +31,7 @@ async function preserveUnreadableData(adapter, dataPath, now = new Date()) {
 const addIcon = obsidian.addIcon || (() => {});
 
 const VIEW_TYPE_CRISP_MIND = "crisp-mind-view";
+const MIND_MARKDOWN_LEAVES = new WeakMap();
 const CRISP_MIND_ICON_ID = "crisp-mind";
 
 const CRISP_MIND_SVG = `<svg class="crisp-mind-brand-icon" viewBox="0 0 75 75" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
@@ -131,6 +132,38 @@ function getCryptoSubtle(windowObj = (typeof window !== "undefined" ? window : n
   return null;
 }
 
+// WebCrypto is taken once at load: replacing crypto.subtle later does not reach the license check.
+const MIND_SUBTLE = (() => {
+  try {
+    const subtle = getCryptoSubtle();
+    return subtle ? Object.freeze({ importKey: subtle.importKey.bind(subtle), verify: subtle.verify.bind(subtle) }) : null;
+  } catch (e) { return null; }
+})();
+function mindSubtle(windowObj) {
+  if (!windowObj) return MIND_SUBTLE;
+  const subtle = getCryptoSubtle(windowObj);
+  return subtle ? { importKey: subtle.importKey.bind(subtle), verify: subtle.verify.bind(subtle) } : null;
+}
+function mindPublicKeyDer() {
+  const pem = CRISP_PUBLIC_KEY_PEM.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace(/\s/g, "");
+  return base64UrlToUint8Array(pem);
+}
+// A verifier that accepts a signature of zeros is not a real verifier; no license is trusted then.
+const MIND_SUBTLE_CHECKS = new WeakMap();
+function mindSubtleTrusted(subtle) {
+  if (!subtle) return Promise.resolve(false);
+  if (!MIND_SUBTLE_CHECKS.has(subtle)) {
+    MIND_SUBTLE_CHECKS.set(subtle, (async () => {
+      try {
+        const key = await subtle.importKey("spki", mindPublicKeyDer().buffer, { name: "Ed25519" }, false, ["verify"]);
+        const accepted = await subtle.verify({ name: "Ed25519" }, key, new Uint8Array(64), new TextEncoder().encode("crisp-mind/self-test"));
+        return accepted === false;
+      } catch (e) { return false; }
+    })());
+  }
+  return MIND_SUBTLE_CHECKS.get(subtle);
+}
+
 async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app = null, windowObj = null, options = {}) {
   if (typeof targetPluginId === "object" && targetPluginId !== null && !app) {
     windowObj = targetPluginId;
@@ -173,20 +206,15 @@ async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app
       }
     }
 
-    const subtle = getCryptoSubtle(windowObj);
-    if (!subtle) {
+    const subtle = mindSubtle(windowObj);
+    if (!subtle || !(await mindSubtleTrusted(subtle))) {
       return { valid: false, reason: "当前环境无法验证签名" };
     }
-    const pemContents = CRISP_PUBLIC_KEY_PEM
-      .replace("-----BEGIN PUBLIC KEY-----", "")
-      .replace("-----END PUBLIC KEY-----", "")
-      .replace(/\s/g, "");
-    const der = base64UrlToUint8Array(pemContents);
-    const key = await subtle.importKey("spki", der.buffer, { name: "Ed25519" }, false, ["verify"]);
+    const key = await subtle.importKey("spki", mindPublicKeyDer().buffer, { name: "Ed25519" }, false, ["verify"]);
     const payloadBytes = new TextEncoder().encode(payloadB64);
     const sigBytes = base64UrlToUint8Array(sigB64);
     const verified = await subtle.verify({ name: "Ed25519" }, key, sigBytes, payloadBytes);
-    if (!verified) return { valid: false, reason: "授权签名无效或伪造" };
+    if (verified !== true) return { valid: false, reason: "授权签名无效或伪造" };
 
     // Inheritance scans several candidate codes, so it must not trigger one device check per
     // candidate. Local-only mode stops after the cryptographic checks; the license finally
@@ -245,12 +273,76 @@ async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app
   }
 }
 
+// Entitlement lives in module-private maps keyed by the plugin and the manager this module created
+// for it. Instance fields (status, isLicensed, licenseManager) are for display only and never unlock.
+const MIND_LICENSE_STATE = new WeakMap();
+const MIND_LICENSE_OWNER = new WeakMap();
+const MIND_LICENSE_EXPIRY = new WeakMap();
+const MIND_LICENSE_CLOCK = new WeakMap();
+const MIND_LICENSE_LISTENER = new WeakMap();
+
+function mindLicenseActive(manager) {
+  if (!manager || MIND_LICENSE_STATE.get(manager) !== true) return false;
+  const expiry = MIND_LICENSE_EXPIRY.get(manager);
+  const now = (MIND_LICENSE_CLOCK.get(manager) || Date.now)();
+  if (expiry === undefined || now < expiry) return true;
+  MIND_LICENSE_STATE.set(manager, false);
+  manager.status = { valid: false, reason: "授权已到期" };
+  setTimeout(() => MIND_LICENSE_LISTENER.get(manager)?.(false), 0);
+  return false;
+}
+
+/** The single gate every feature goes through. */
+function mindEntitled(plugin) {
+  if (!plugin || (typeof plugin !== "object" && typeof plugin !== "function")) return false;
+  return mindLicenseActive(MIND_LICENSE_OWNER.get(plugin));
+}
+
+/** Notice + settings when locked; used by the plugin and its views instead of overridable methods. */
+function mindRequire(plugin, feature = "此功能") {
+  if (mindEntitled(plugin)) return true;
+  new Notice(`🔒 ${feature}需要激活 Crisp Mind，已为你打开授权设置。`);
+  try {
+    plugin?.app?.setting?.open?.();
+    plugin?.app?.setting?.openTabById?.("crisp-mind");
+  } catch (e) {}
+  return false;
+}
+
+function mindLicenseManagerFor(plugin, options = {}) {
+  let manager = MIND_LICENSE_OWNER.get(plugin);
+  if (!manager) {
+    manager = new CrispMindLicenseManager(plugin.app, plugin.settings);
+    if (typeof options.now === "function") MIND_LICENSE_CLOCK.set(manager, options.now);
+    if (typeof options.onEntitlementChange === "function") MIND_LICENSE_LISTENER.set(manager, options.onEntitlementChange);
+    MIND_LICENSE_OWNER.set(plugin, manager);
+  }
+  plugin.licenseManager = manager;
+  return manager;
+}
+
+function applyMindLicenseResult(manager, result) {
+  const was = MIND_LICENSE_STATE.get(manager) === true;
+  const valid = result?.valid === true;
+  MIND_LICENSE_STATE.set(manager, valid);
+  const expiry = valid ? new Date(result.payload?.expiresAt).getTime() : NaN;
+  if (Number.isFinite(expiry)) MIND_LICENSE_EXPIRY.set(manager, expiry); else MIND_LICENSE_EXPIRY.delete(manager);
+  manager.status = valid
+    ? { valid: true, payload: result.payload, source: result.source || "offline" }
+    : { valid: false, reason: result?.reason || "授权码无效" };
+  const now = mindLicenseActive(manager);
+  if (was !== now) MIND_LICENSE_LISTENER.get(manager)?.(now);
+  return manager.status;
+}
+
 class CrispMindLicenseManager {
-  constructor(app, settings, options = {}) {
+  constructor(app, settings) {
     this.app = app;
     this.settings = settings;
     this.pluginId = "crisp-mind";
     this.status = { valid: false, reason: "尚未激活" };
+    this.checkId = 0;
+    MIND_LICENSE_STATE.set(this, false);
   }
 
   getStatus() {
@@ -258,45 +350,35 @@ class CrispMindLicenseManager {
   }
 
   isLicensed() {
-    return !!this.status.valid;
+    return mindLicenseActive(this);
   }
 
-  async validateCurrentLicense() {
-    const code = (this.settings.licenseCode || "").trim();
-    if (!code) {
-      this.status = { valid: false, reason: "未输入授权码" };
-      return this.status;
-    }
-    const result = await verifyLicenseCode(code, this.pluginId, this.app);
-    if (result.valid) {
-      this.status = { valid: true, payload: result.payload, source: result.source || "offline" };
-      this.settings.licenseLastOnlineAt = Date.now();
-    } else {
-      this.status = { valid: false, reason: result.reason || "授权码无效" };
-    }
-    return this.status;
+  async validateCurrentLicense(options = {}) {
+    const id = ++this.checkId;
+    const code = (this.settings?.licenseCode || "").trim();
+    const result = code ? await verifyLicenseCode(code, this.pluginId, this.app, null, options) : { valid: false, reason: "未输入授权码" };
+    if (id !== this.checkId) return this.status;
+    if (result.valid && result.source === "online" && this.settings) this.settings.licenseLastOnlineAt = Date.now();
+    return applyMindLicenseResult(this, result);
   }
 
   async activate(code) {
+    const id = ++this.checkId;
     const trimmed = (code || "").trim();
-    if (!trimmed) {
-      this.status = { valid: false, reason: "授权码为空" };
-      return this.status;
-    }
-    const result = await verifyLicenseCode(trimmed, this.pluginId, this.app);
-    if (result.valid) {
+    const result = trimmed ? await verifyLicenseCode(trimmed, this.pluginId, this.app) : { valid: false, reason: "授权码为空" };
+    if (id !== this.checkId) return this.status;
+    if (result.valid && this.settings) {
       this.settings.licenseCode = trimmed;
       this.settings.licenseLastOnlineAt = Date.now();
-      this.status = { valid: true, payload: result.payload, source: result.source || "offline" };
-      return this.status;
     }
-    this.status = { valid: false, reason: result.reason || "激活失败" };
-    return this.status;
+    if (!result.valid) result.reason = result.reason || "激活失败";
+    return applyMindLicenseResult(this, result);
   }
 
   clear() {
-    this.settings.licenseCode = "";
-    this.status = { valid: false, reason: "已清除授权" };
+    this.checkId++;
+    if (this.settings) this.settings.licenseCode = "";
+    applyMindLicenseResult(this, { valid: false, reason: "已清除授权" });
   }
 }
 
@@ -722,7 +804,9 @@ function normalizeMindAnnotations(docData) {
       from,
       to,
       label: typeof raw.label === "string" ? raw.label.slice(0, 200) : "",
-      color: normalizeMindColor(raw.color)
+      color: normalizeMindColor(raw.color),
+      ...(raw.arrow === "both" || raw.arrow === "none" ? { arrow: raw.arrow } : {}),
+      ...(raw.dashed === true ? { dashed: true } : {})
     });
     relationIds.add(id);
     relationKeys.add(pair);
@@ -858,9 +942,23 @@ function cleanMindData(data) {
 }
 
 // Managed files may be displayed after an error, but never silently repaired on disk.
+// A map written as a bare "# title" + "- item" outline (no data block) can be edited in place when
+// re-serialising it reproduces every line; anything else (prose, other bullets) stays read-only.
+function mindOutlineIsLossless(raw) {
+  const body = String(raw || "").replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+  const lines = text => text.split(/\r?\n/).map(line => line.replace(/\s+$/, "")).filter(Boolean);
+  const original = lines(body);
+  if (!original.length || !/^# \S/.test(original[0])) return false;
+  try {
+    return lines(treeToMarkdownOutline(markdownOutlineToTree(body))).join("\n") === original.join("\n");
+  } catch (e) {
+    return false;
+  }
+}
+
 function inspectMindSource(raw) {
   const start = "<!-- CRISP-MIND-DATA-START -->", end = "<!-- CRISP-MIND-DATA-END -->";
-  if (!raw.includes(start) || !raw.includes(end)) return "缺少导图数据块，已只读打开";
+  if (!raw.includes(start) || !raw.includes(end)) return mindOutlineIsLossless(raw) ? null : "缺少导图数据块，已只读打开";
   const block = raw.slice(raw.indexOf(start) + start.length, raw.lastIndexOf(end));
   const match = block.match(/^\s*```crisp-mind\s*\n([\s\S]*?)\n```\s*$/);
   if (!match) return "导图数据块损坏，已只读打开";
@@ -1773,6 +1871,26 @@ class CrispMindCanvas {
       this.docData.relations.push(relation);
     });
     return changed ? relation : null;
+  }
+
+  findRelation(id) {
+    return (this.docData.relations || []).find(relation => relation.id === id) || null;
+  }
+
+  // arrow: "end" (default) | "both" | "none"; dashed: boolean.
+  setRelationStyle(id, { arrow, dashed } = {}) {
+    if (!this.findRelation(id)) return false;
+    return this.transact(() => {
+      const relation = this.findRelation(id);
+      if (arrow !== undefined) {
+        if (arrow === "both" || arrow === "none") relation.arrow = arrow;
+        else delete relation.arrow;
+      }
+      if (dashed !== undefined) {
+        if (dashed === true) relation.dashed = true;
+        else delete relation.dashed;
+      }
+    });
   }
 
   removeRelation(id) {
@@ -3323,7 +3441,9 @@ class CrispMindCanvas {
       path.setAttribute("stroke", color);
       path.setAttribute("stroke-width", "2");
       path.setAttribute("stroke-linecap", "round");
-      path.setAttribute("marker-end", `url(#${markerId})`);
+      if (relation.arrow !== "none") path.setAttribute("marker-end", `url(#${markerId})`);
+      if (relation.arrow === "both") path.setAttribute("marker-start", `url(#${markerId})`);
+      if (relation.dashed) path.setAttribute("stroke-dasharray", "6 5");
       path.setAttribute("class", "crisp-mind-relation");
       path.addEventListener("contextmenu", event => {
         event.preventDefault(); event.stopPropagation();
@@ -3923,12 +4043,12 @@ class CrispMindEditView extends TextFileView {
   }
 
   isLicensed() {
-    return typeof this.plugin?.isLicensed === "function" ? this.plugin.isLicensed() : true;
+    return mindEntitled(this.plugin);
   }
 
   getViewData() {
     if (!this.mindDoc) return "";
-    if (this.readOnly || !this.dirty) return this.originalData || "";
+    if (this.locked || this.readOnly || !this.dirty) return this.originalData || "";
     return assembleMindMarkdown(this.mindDoc);
   }
 
@@ -3942,8 +4062,9 @@ class CrispMindEditView extends TextFileView {
     this.originalData = data;
     this.dirty = false;
     this.baseReadOnly = !this.file?.path?.endsWith(".mind.md") && !this.file?.path?.endsWith(".mind");
+    this.locked = !mindEntitled(this.plugin);
     this.sourceWarning = this.baseReadOnly ? null : inspectMindSource(data);
-    this.readOnly = this.baseReadOnly || !this.isLicensed() || !!this.sourceWarning;
+    this.readOnly = this.locked || this.baseReadOnly || !!this.sourceWarning;
     this.saveError = null;
     // Only drop content to empty document if JSON itself is corrupt/unsafe.
     // For non-destructive warnings (like outline mismatch or extra body), keep parsed mindDoc visible in read-only mode.
@@ -3954,7 +4075,7 @@ class CrispMindEditView extends TextFileView {
       this.mindDoc = parseMindMarkdown("");
     }
     let healedImages = false;
-    if (this.sourceWarning && !isFatalCorrupt && !this.baseReadOnly && this.isLicensed()) {
+    if (this.sourceWarning && !isFatalCorrupt && !this.baseReadOnly && !this.locked) {
       const healed = this.healRenamedImages(data);
       if (healed) {
         this.mindDoc = healed;
@@ -3963,13 +4084,15 @@ class CrispMindEditView extends TextFileView {
         healedImages = true;
       }
     }
-    if (!this.canvasController) {
-      this.initViewUI();
-    } else {
+    if (this.canvasController) {
       this.canvasController.destroy();
       this.canvasController = null;
-      this.initViewUI();
     }
+    if (this.locked) {
+      this.renderLockedView();
+      return;
+    }
+    this.initViewUI();
     if (healedImages) {
       // The outline already points at the renamed file; write the JSON block to match.
       this.dirty = true;
@@ -4039,7 +4162,7 @@ class CrispMindEditView extends TextFileView {
   save() {
     // Serialise saves for this view; vault.process compares source atomically across views.
     this.saveQueue = (this.saveQueue || Promise.resolve()).then(async () => {
-      if (!this.file || !this.dirty || this.readOnly || !this.mindDoc) return;
+      if (!this.file || !this.dirty || this.readOnly || !this.mindDoc || !mindEntitled(this.plugin)) return;
       const file = this.file, doc = this.mindDoc;
       const output = assembleMindMarkdown(doc), expected = this.originalData;
       if (output === expected) { this.dirty = false; this.setSaveState("已保存"); return; }
@@ -4085,7 +4208,7 @@ class CrispMindEditView extends TextFileView {
   // A plain note stays preview-only; editing happens in a separate .mind.md. Outlines may hold
   // empty bullets, so repair first or the copy would reopen as corrupt.
   async saveAsEditableMap() {
-    if (!this.mindDoc || !this.requireLicense("另存为可编辑导图")) return;
+    if (!this.mindDoc || !mindRequire(this.plugin, "另存为可编辑导图")) return;
     const data = validateAndRepairTree(cleanMindData(this.mindDoc.data));
     await this.saveCopy(assembleMindMarkdown({ ...this.mindDoc, data }), "");
   }
@@ -4133,32 +4256,48 @@ class CrispMindEditView extends TextFileView {
   }
 
   openLicenseSettings() {
-    this.plugin.openLicenseSettings();
+    this.app?.setting?.open?.();
+    this.app?.setting?.openTabById?.("crisp-mind");
   }
 
   requireLicense(feature) {
-    return this.plugin.requireLicense(feature);
+    return mindRequire(this.plugin, feature);
   }
 
   refreshLicenseAccess() {
-    const nextReadOnly = this.baseReadOnly || !!this.sourceWarning || !this.isLicensed();
-    if (nextReadOnly === this.readOnly) {
-      this.renderToolbar?.();
+    const locked = !mindEntitled(this.plugin);
+    if (locked === !!this.locked) {
+      if (!locked) this.renderToolbar?.();
       return;
     }
-    const wasDirty = this.dirty;
-    this.readOnly = nextReadOnly;
-    if (this.canvasController) {
-      this.canvasController.destroy();
-      this.canvasController = null;
+    if (locked && this.dirty && this.mindDoc && this.file) {
+      // The license ended mid-edit: keep the draft as a snapshot before the view locks.
+      void this.writeSnapshot(assembleMindMarkdown(this.mindDoc), "unsaved-draft").catch(() => {});
     }
-    this.initViewUI();
-    if (this.readOnly && wasDirty) this.setSaveState("未激活 · 有未保存修改", true);
-    else if (!this.readOnly && wasDirty) {
-      this.setSaveState("待保存");
-      this.requestSave();
-    }
-    new Notice(this.readOnly ? "Crisp Mind 未激活，已切换为只读预览。" : "Crisp Mind 授权已生效，编辑功能已解锁。");
+    this.dirty = false;
+    this.setViewData(this.originalData ?? "", true);
+    new Notice(locked ? "Crisp Mind 未激活，导图已锁定。" : "Crisp Mind 授权已生效。");
+  }
+
+  // Unactivated: no canvas at all. The map is plain Markdown, so it can always be read as text.
+  renderLockedView() {
+    this.hideNotePreview?.();
+    this.contentEl.innerHTML = "";
+    const box = this.contentEl.createDiv({ cls: "crisp-mind-locked" });
+    const icon = box.createDiv({ cls: "crisp-mind-locked__icon" });
+    try { setIcon(icon, CRISP_MIND_ICON_ID); } catch (e) {}
+    box.createEl("h3", { text: "Crisp Mind 未激活" });
+    box.createEl("p", { text: "激活后即可查看和编辑思维导图。导图本身是普通 Markdown，随时可以用文本方式打开。" });
+    const actions = box.createDiv({ cls: "crisp-mind-locked__actions" });
+    const activate = actions.createEl("button", { text: "输入授权码", cls: "mod-cta" });
+    activate.addEventListener("click", () => this.openLicenseSettings());
+    const asText = actions.createEl("button", { text: "以 Markdown 打开" });
+    asText.addEventListener("click", () => {
+      const path = this.file?.path;
+      if (!path) return;
+      this.plugin?.keepAsMarkdown?.(this.leaf, path);
+      void this.leaf.setViewState({ type: "markdown", state: { file: path } });
+    });
   }
 
   initViewUI() {
@@ -4654,7 +4793,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptBoundary(node, existing = null) {
-    if (!this.requireLicense("边界编辑")) return;
+    if (!mindRequire(this.plugin, "边界编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑边界" : "添加边界",
       value: existing?.label || "",
@@ -4664,7 +4803,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptSummary(node, existing = null) {
-    if (!this.requireLicense("概要编辑")) return;
+    if (!mindRequire(this.plugin, "概要编辑")) return;
     new CrispMindPromptModal(this.app, {
       title: existing ? "编辑概要" : "添加概要",
       value: existing?.label || "",
@@ -4674,7 +4813,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   promptRelation(nodes) {
-    if (!this.requireLicense("关系编辑")) return;
+    if (!mindRequire(this.plugin, "关系编辑")) return;
     const from = nodes[0], to = nodes[1];
     const existing = (this.canvasController.docData.relations || []).find(relation =>
       (relation.from === from.id && relation.to === to.id) || (relation.from === to.id && relation.to === from.id)
@@ -4688,7 +4827,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   showRelationMenu(relation, event) {
-    if (this.readOnly || !this.requireLicense("关系编辑")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "关系编辑")) return;
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑关系标签").setIcon("pencil").onClick(() => {
       new CrispMindPromptModal(this.app, {
@@ -4698,12 +4837,20 @@ class CrispMindEditView extends TextFileView {
         onSubmit: label => this.canvasController.addRelation(relation.from, relation.to, label, relation.color)
       }).open();
     }));
+    menu.addSeparator();
+    for (const [arrow, title] of [["end", "单向箭头"], ["both", "双向箭头"], ["none", "无箭头"]]) {
+      menu.addItem(item => item.setTitle(title).setChecked((relation.arrow || "end") === arrow)
+        .onClick(() => this.canvasController.setRelationStyle(relation.id, { arrow })));
+    }
+    menu.addItem(item => item.setTitle("虚线").setChecked(!!relation.dashed)
+      .onClick(() => this.canvasController.setRelationStyle(relation.id, { dashed: !relation.dashed })));
+    menu.addSeparator();
     menu.addItem(item => item.setTitle("删除关系").setIcon("trash-2").onClick(() => this.canvasController.removeRelation(relation.id)));
     menu.showAtMouseEvent(event);
   }
 
   showSummaryMenu(summary, event) {
-    if (this.readOnly || !this.requireLicense("概要编辑")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "概要编辑")) return;
     const node = this.canvasController.findNode(summary.nodeId);
     const menu = new Menu();
     menu.addItem(item => item.setTitle("编辑概要标签").setIcon("pencil").onClick(() => node && this.promptSummary(node, summary)));
@@ -4780,7 +4927,7 @@ class CrispMindEditView extends TextFileView {
 
     // Layout Switcher
     this.createToolbarButton("layout-grid", "切换布局（切换后可点击适应画布）", (e) => {
-      if (!this.requireLicense("布局切换") || this.readOnly) return;
+      if (!mindRequire(this.plugin, "布局切换") || this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("逻辑结构图 (从左向右)").onClick(() => this.canvasController.setLayout("logicalStructure")));
       menu.addItem((i) => i.setTitle("经典思维导图 (双向发散)").onClick(() => this.canvasController.setLayout("mindMap")));
@@ -4793,7 +4940,7 @@ class CrispMindEditView extends TextFileView {
 
     // Theme Switcher
     this.createToolbarButton("palette", "切换 Crisp 质感调色盘", (e) => {
-      if (!this.requireLicense("主题切换") || this.readOnly) return;
+      if (!mindRequire(this.plugin, "主题切换") || this.readOnly) return;
       const menu = new Menu();
       menu.addItem((i) => i.setTitle("Crisp Obsidian (系统自适应)").onClick(() => this.canvasController.setTheme("crisp-obsidian")));
       menu.addItem((i) => i.setTitle("Crisp Cupertino (经典灰蓝)").onClick(() => this.canvasController.setTheme("crisp-cupertino")));
@@ -4812,7 +4959,7 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("presentation", "导图演示模式", () => {
-      if (!this.requireLicense("演示模式")) return;
+      if (!mindRequire(this.plugin, "演示模式")) return;
       if (this.canvasController.presentationActive) this.canvasController.stopPresentation();
       new CrispMindPresentationModal(this.app, this).open();
     });
@@ -4827,7 +4974,7 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("panel-right", "节点样式与备注", () => {
-      if (!this.requireLicense("节点样式与备注")) return;
+      if (!mindRequire(this.plugin, "节点样式与备注")) return;
       if (this.inspectorOpen) this.closeInspector();
       else this.openInspector();
     });
@@ -4840,7 +4987,7 @@ class CrispMindEditView extends TextFileView {
     });
 
     this.createToolbarButton("history", "快照与恢复", () => {
-      if (!this.requireLicense("快照与恢复")) return;
+      if (!mindRequire(this.plugin, "快照与恢复")) return;
       void this.showRecovery();
     });
     if (!this.readOnly) this.createToolbarButton("save", "保存 / 冲突处理", (e) => {
@@ -4851,7 +4998,7 @@ class CrispMindEditView extends TextFileView {
     });
     // Export Modal Trigger
     this.createToolbarButton("download", "导出思维导图 (PNG / PDF / SVG)", () => {
-      if (!this.requireLicense("导出思维导图")) return;
+      if (!mindRequire(this.plugin, "导出思维导图")) return;
       new CrispMindExportModal(this.app, this).open();
     });
 
@@ -5159,7 +5306,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   async insertPastedImage(blob, nodeId) {
-    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "插入图片")) return;
     try {
       const ext = ({ "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/svg+xml": "svg", "image/bmp": "bmp", "image/avif": "avif" })[blob.type] || "png";
       const d = new Date(), pad = n => String(n).padStart(2, "0");
@@ -5183,7 +5330,7 @@ class CrispMindEditView extends TextFileView {
 
   // Files already inside this vault are linked as they are; anything else is copied in as an attachment.
   async insertImageFilesFromDisk(paths, nodeId) {
-    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "插入图片")) return;
     try {
       const path = paths[0];
       const base = this.app.vault.adapter?.getBasePath?.()?.replace(/[\\/]+$/, "");
@@ -5207,7 +5354,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   async insertDroppedImage(dataTransfer, nodeId) {
-    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "插入图片")) return;
     try {
       const vaultFile = this.draggedVaultImage();
       if (vaultFile) { await this.attachImageFile(nodeId, vaultFile); return; }
@@ -5220,7 +5367,7 @@ class CrispMindEditView extends TextFileView {
   }
 
   pickImage(nodeId) {
-    if (this.readOnly || !this.requireLicense("插入图片")) return;
+    if (this.readOnly || !mindRequire(this.plugin, "插入图片")) return;
     const owner = this;
     const files = this.app.vault.getFiles()
       .filter(file => isMindImagePath(file.path))
@@ -5695,6 +5842,33 @@ class CrispMindExporter {
   }
 }
 
+// Writes next to the map and never overwrites; returns the path it used.
+async function saveMindExport(app, view, baseName, format, dataBuffer) {
+  const targetPath = await exportTargetPath(app.vault, view.file?.parent?.path || "", baseName, format);
+  const ab = dataBuffer instanceof ArrayBuffer ? dataBuffer : dataBuffer.buffer;
+  if (typeof app.vault.createBinary === "function") await app.vault.createBinary(targetPath, ab);
+  else await app.vault.adapter.writeBinary(targetPath, ab);
+  new Notice(`导图已成功导出至：${targetPath}`);
+  return targetPath;
+}
+
+// Command-palette export with the dialog's defaults (PNG 2x, opaque background).
+async function exportMindToVault(app, view, format) {
+  if (!mindEntitled(view?.plugin) || !view?.canvasController) return null;
+  const exporter = new CrispMindExporter(view);
+  const baseName = (view.file ? view.file.basename : "crisp-mindmap").replace(/\.mind$/i, "") || "crisp-mindmap";
+  try {
+    let data;
+    if (format === "png") data = (await exporter.toPng({ scale: 2, transparent: false })).arrayBuffer;
+    else if (format === "pdf") data = (await exporter.toPdf()).arrayBuffer;
+    else data = new TextEncoder().encode((await exporter.toSvgWithImages({ transparent: false })).svgString).buffer;
+    return await saveMindExport(app, view, baseName, format, data);
+  } catch (error) {
+    new Notice(`导出失败：${error.message || error}`, 8000);
+    return null;
+  }
+}
+
 // Next free "<folder>/<name>.<ext>" path. A root-level map has parent path "/", which must
 // not produce "//name.ext".
 async function exportTargetPath(vault, parentPath, baseName, extension) {
@@ -5788,6 +5962,7 @@ class CrispMindExportModal extends Modal {
   }
 
   async handleExport(destination) {
+    if (!mindEntitled(this.view?.plugin)) return;
     const format = this.selectedFormat;
     // "Map.mind.md" has basename "Map.mind"; export as "Map.png", not "Map.mind.png".
     const baseName = (this.view.file ? this.view.file.basename : "crisp-mindmap").replace(/\.mind$/i, "") || "crisp-mindmap";
@@ -5810,12 +5985,7 @@ class CrispMindExportModal extends Modal {
     }
 
     if (destination === "vault") {
-      const targetPath = await exportTargetPath(this.app.vault, this.view.file?.parent?.path || "", baseName, format);
-      const ab = dataBuffer instanceof ArrayBuffer ? dataBuffer : dataBuffer.buffer;
-      // Never overwrite: an existing image with the same name gets a numbered sibling instead.
-      if (typeof this.app.vault.createBinary === "function") await this.app.vault.createBinary(targetPath, ab);
-      else await this.app.vault.adapter.writeBinary(targetPath, ab);
-      new Notice(`导图已成功导出至：${targetPath}`);
+      await saveMindExport(this.app, this.view, baseName, format, dataBuffer);
     } else {
       const blob = new Blob([dataBuffer], { type: mimeType });
       const a = document.createElement("a");
@@ -6136,7 +6306,7 @@ class CrispMindPlugin extends Plugin {
     await this.loadSettings();
     this.registerHoverSource();
 
-    this.licenseManager = new CrispMindLicenseManager(this.app, this.settings);
+    const licenseManager = mindLicenseManagerFor(this, { onEntitlementChange: () => this.refreshLicenseViews() });
 
     if (!this.settings.licenseCode) {
       const vaultLicense = await discoverVaultCrispLicense(this.app);
@@ -6150,7 +6320,9 @@ class CrispMindPlugin extends Plugin {
     }
 
     if (this.settings.licenseCode) {
-      void this.licenseManager.validateCurrentLicense().then(() => this.refreshLicenseViews());
+      // Local signature check first (milliseconds) so maps open unlocked; the device check follows.
+      await licenseManager.validateCurrentLicense({ online: false });
+      void licenseManager.validateCurrentLicense();
     }
 
     try {
@@ -6202,21 +6374,22 @@ class CrispMindPlugin extends Plugin {
       })
     );
 
-    this.registerEvent(
-      this.app.workspace.on("file-open", (file) => {
-        if (!file || !file.path?.endsWith(".mind.md")) return;
-        const leaves = this.app.workspace.getLeavesOfType("markdown");
-        for (const leaf of leaves) {
-          if (leaf.view?.file?.path === file.path) {
-            leaf.setViewState({
-              type: VIEW_TYPE_CRISP_MIND,
-              state: { file: file.path }
-            });
-            break;
-          }
+    // file-open only fires for the active leaf; layout-change also catches maps opened in background tabs.
+    this.registerEvent(this.app.workspace.on("file-open", () => this.convertMindLeaves()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.convertMindLeaves()));
+
+    for (const format of ["png", "svg", "pdf"]) {
+      this.addCommand({
+        id: `export-${format}`,
+        name: `导出当前导图为 ${format.toUpperCase()}（保存到导图所在文件夹）`,
+        checkCallback: (checking) => {
+          const view = this.app.workspace.getActiveViewOfType?.(CrispMindEditView);
+          if (!view?.canvasController) return false;
+          if (!checking && mindRequire(this, "导出思维导图")) void exportMindToVault(this.app, view, format);
+          return true;
         }
-      })
-    );
+      });
+    }
 
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       if (file instanceof TFile && ["md", "mind"].includes(file.extension)) {
@@ -6227,7 +6400,7 @@ class CrispMindPlugin extends Plugin {
   }
 
   isLicensed() {
-    return !!this.licenseManager?.isLicensed?.();
+    return mindEntitled(this);
   }
 
   openLicenseSettings() {
@@ -6237,10 +6410,21 @@ class CrispMindPlugin extends Plugin {
   }
 
   requireLicense(feature = "此功能") {
-    if (this.isLicensed()) return true;
-    new Notice(`🔒 ${feature}需要激活 Crisp Mind，已为你打开授权设置。`);
-    this.openLicenseSettings();
-    return false;
+    return mindRequire(this, feature);
+  }
+
+  // A leaf the user explicitly switched to Markdown keeps that file as text.
+  keepAsMarkdown(leaf, path = leaf?.view?.file?.path) {
+    if (leaf && path) MIND_MARKDOWN_LEAVES.set(leaf, path);
+  }
+
+  convertMindLeaves() {
+    const workspace = this.app?.workspace;
+    for (const leaf of workspace?.getLeavesOfType?.("markdown") || []) {
+      const path = leaf.view?.file?.path;
+      if (!path || !path.endsWith(".mind.md") || MIND_MARKDOWN_LEAVES.get(leaf) === path) continue;
+      void leaf.setViewState({ type: VIEW_TYPE_CRISP_MIND, state: { file: path }, active: workspace.activeLeaf === leaf });
+    }
   }
 
   refreshLicenseViews() {
@@ -6250,7 +6434,7 @@ class CrispMindPlugin extends Plugin {
   }
 
   async createNewMindMap(folderPath = "") {
-    if (!this.requireLicense("新建思维导图")) return;
+    if (!mindRequire(this, "新建思维导图")) return;
     const fileName = `未命名思维导图 ${new Date().toISOString().slice(0, 10)}.mind.md`;
     const basePath = folderPath ? `${folderPath}/${fileName}` : fileName;
     let fullPath = basePath, suffix = 2;

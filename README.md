@@ -29,7 +29,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 - 🎬 **Presentation Mode**: 将节点保存为讲解顺序，逐步平移、缩放并突出当前节点；每一步支持仅自己可见的备注，播放时用方向键切换、Esc 退出。
 - 🎛️ **Node Style & Notes**: 节点可单独设置形状、填充、文字、边框、字号、字重与对齐；备注随 `.mind.md` 保存，并在画布和大纲显示标记；鼠标悬停在 N 标记上即可预览备注，备注里写的图片路径会直接显示成图片。
 - 🖼️ **Node Images**: 选中节点后 `⌘ / Ctrl + V` 粘贴截图、拖入图片或从库内选择，图片显示在节点文字上方，尺寸分小、中、大三档；双击看大图，按住 `⌘ / Ctrl` 悬停可预览，大纲和搜索能按图片文件名找到节点，导出时一并带上。图片按 Obsidian 附件设置保存，并以 `![[图片]]` 写入大纲，改名后导图自动跟随。
-- 🕸️ **Relations, Boundaries & Summaries**: 支持跨分支关系箭头、分支边界和阶段概要，随 SVG、PNG、PDF 导出，删除节点时自动清理失效引用。
+- 🕸️ **Relations, Boundaries & Summaries**: 支持跨分支关系箭头（单向、双向或无箭头，可设虚线）、分支边界和阶段概要，随 SVG、PNG、PDF 导出，删除节点时自动清理失效引用。
 - 🧭 **Multi-Select & Outline Sidebar**: 使用 `⌘ / Ctrl + 点击` 追加选择，`Shift + 点击` 选择可见范围；大纲侧栏与画布选择、折叠和定位保持同步。
 - ⌨️ **Fluid Keyboard-First Workflow**: 全键盘高频流转，`Tab` 插入子主题、`Enter` 插入同级主题、`Space` 就地编辑、`Delete` 删除分支、`Cmd/Ctrl + Z / Shift + Z` 极速撤销与重做。
 - 🏝️ **Floating Pill & Node Island**: 极简悬浮胶囊工具栏集成布局、配色、批量折叠 / 展开、高保真导出与原生操作指南；节点浮岛快速添加待办与双链，节点右键菜单可打开双链到右侧分屏，或将分支提炼为独立笔记。
@@ -37,7 +37,8 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
   - **矢量 SVG**: 精准计算全局包围盒，原生支持深浅主题背景与高精度矢量曲线。
   - **2x 高清 PNG**: Retina 级超清位图渲染，自动采用纯净背景，便于分享至社交媒体与排版平台。
   - **高清 PDF**: 生成符合 PDF-1.4 格式的标准 PDF 文档（2x 高清光栅化封装，非矢量），保留真实排版与清晰度，适合长效打印与归档交流。
-- 🔗 **Markdown Outline & Bi-Directional Linking**: 采用 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
+  - **命令面板导出**: 「导出当前导图为 PNG / SVG / PDF」直接保存到导图所在文件夹，不弹窗、不覆盖同名文件。
+- 🔗 **Markdown Outline & Bi-Directional Linking**: 采用 `.mind.md` 混合存储架构，前半部分为纯文本大纲，尾部隔离数据存储。只写了「# 标题」和「- 列表」的大纲文件也能直接编辑，首次保存时补上数据块。原生支持 Obsidian 全局搜索、快捷切换（Quick Switcher）与反向链接网络。
 - 🛡️ **Local-First & Snapshot Protection**: 导图解析、节点测量、布局运算与导出渲染全部在本地完成，笔记内容不出设备；保存前自动写入快照防丢，每个导图保留最近 30 份。
 - 🔑 **Crisp Authorization**: 基于 Ed25519 非对称公钥密码学本地验签。全家桶授权覆盖全部插件；启动时自动扫描仓库内其它 Crisp 插件，采用其中第一个确实包含 Crisp Mind 权限的授权，作用于其它插件的单款授权不会被误继承。
 
@@ -98,7 +99,7 @@ Part of the **Crisp Series** for Obsidian by [letschips](https://github.com/lets
 ## ⚙️ Activation / 授权激活
 
 Crisp Mind 是 **Crisp 插件套件** 的成员之一。
-- 未激活时可打开并只读预览 `.mind.md`、搜索和大纲导航；新建、编辑、保存、样式备注、关系边界概要、布局主题、演示与导出需要有效授权。
+- 查看、新建、编辑、保存与导出思维导图都需要有效授权。未激活时打开 `.mind.md` 只显示激活提示，可点「以 Markdown 打开」按文本查看导图内容。
 - 若您已在同一设备中激活过其它 Crisp 插件（如 Crisp Pulse、Crisp Focus、Crisp Visual 等），Crisp Mind 启动时会**自动继承**其中一个授权，无需重复配置。
 - 继承只采用**确实包含 Crisp Mind 权限**的授权：全家桶授权一定可用；仅授权其它单款插件的授权码不会被继承，此时需单独激活 Crisp Mind。
 - 您也可以进入 **设置 → Crisp Mind** 手动输入激活码进行验证。

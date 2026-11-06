@@ -24,7 +24,7 @@ function makeLicenseCode(overrides = {}) {
 }
 
 // Test harness context simulating Obsidian environment
-function setupTestContext(publicKeyPem) {
+function setupTestContext(publicKeyPem, overrides = {}) {
   class Plugin {
     registerView() {}
     registerEvent() {}
@@ -125,7 +125,8 @@ function setupTestContext(publicKeyPem) {
     atob: globalThis.atob,
     Buffer: globalThis.Buffer,
     TextEncoder: globalThis.TextEncoder,
-    TextDecoder: globalThis.TextDecoder
+    TextDecoder: globalThis.TextDecoder,
+    ...overrides
   };
 
   const mainPath = path.join(__dirname, "../main.js");
@@ -136,7 +137,7 @@ function setupTestContext(publicKeyPem) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -644,7 +645,7 @@ test("ordinary Markdown view returns exact original content", () => {
   const { helpers } = setupTestContext();
   const v = Object.create(helpers.CrispMindEditView.prototype);
   v.file = {path:"notes.md"};
-  v.initViewUI = () => {};
+  v.initViewUI = () => {}; v.renderLockedView = () => {};
   const source = "---\ncustom: yes\n---\n# Note\nA paragraph.\n- item\n";
   v.setViewData(source, true);
   assert.equal(v.getViewData(), source);
@@ -858,11 +859,11 @@ function savedViewFixture() {
   let disk=helpers.assembleMindMarkdown(helpers.parseMindMarkdown('# Root\n- One'));
   const backups=[];let fail=false;
   v.file={path:'test.mind.md',basename:'test.mind',parent:{path:''}};
-  v.plugin={settings:{autoBackup:true},manifest:{id:'crisp-mind'},isLicensed:()=>true};
+  v.plugin=helpers.entitle({settings:{autoBackup:true},manifest:{id:'crisp-mind'}});v.renderLockedView=()=>{};
   v.app={vault:{configDir:'.obsidian',adapter:{exists:async()=>true,mkdir:async()=>{},write:async(p,t)=>backups.push(JSON.parse(t))},process:async(file,fn)=>{if(fail)throw Error('disk full');disk=fn(disk);}}};
   v.initViewUI=()=>{};v.requestSave=()=>{};v.notifyPulseContribution=()=>{};
   v.setViewData(disk,true);v.mindDoc.data.root.data.text='Changed';v.dirty=true;
-  return {v,backups,disk:()=>disk,setDisk:s=>disk=s,setFail:b=>fail=b};
+  return {v,helpers,backups,disk:()=>disk,setDisk:s=>disk=s,setFail:b=>fail=b};
 }
 test('save creates recovery snapshot and persists matching source',async()=>{
   const {v,backups,disk}=savedViewFixture();await v.save();
@@ -889,7 +890,7 @@ test('corrupt managed file remains read-only and byte-preserved',()=>{
 });
 test('unlicensed mind views open read-only and keep on-disk content unchanged',async()=>{
   const f=savedViewFixture();
-  f.v.plugin.isLicensed=()=>false;
+  f.helpers.entitle(f.v.plugin,false);
   f.v.setViewData(f.v.originalData,true);
   assert.equal(f.v.readOnly,true);
   f.v.mindDoc.data.root.data.text='Should not persist';
@@ -1832,7 +1833,7 @@ test("saving a plain note as an editable map creates a clean .mind.md and leaves
     getAbstractFileByPath: path => path === "Notes/项目计划.mind.md" ? {} : null,
     create: async (path, content) => { created.push({ path, content }); return { path }; }
   } };
-  v.plugin = { requireLicense: () => true, openActiveFileAsMindMap: async () => {} };
+  v.plugin = helpers.entitle({ openActiveFileAsMindMap: async () => {} });
   await v.saveAsEditableMap();
   assert.equal(created.length, 1);
   assert.equal(created[0].path, "Notes/项目计划 2.mind.md");
@@ -1908,7 +1909,7 @@ test("opening a renamed-image map heals the JSON path and saves instead of going
   const v = Object.create(helpers.CrispMindEditView.prototype);
   let saves = 0;
   v.file = { path: "Maps/a.mind.md" };
-  v.plugin = { isLicensed: () => true };
+  v.plugin = helpers.entitle({});
   v.app = { metadataCache: { getFirstLinkpathDest: (target) => target === "新名字.png" ? { path: "附件/新名字.png", extension: "png" } : null } };
   v.initViewUI = () => {};
   v.requestSave = () => { saves++; };
@@ -1927,7 +1928,7 @@ test("an unresolvable renamed image stays read-only and is not rewritten", () =>
   const raw = helpers.assembleMindMarkdown(imageDoc(helpers)).replace("![[附件/架构图.png]]", "![[不存在.png]]");
   const v = Object.create(helpers.CrispMindEditView.prototype);
   v.file = { path: "Maps/a.mind.md" };
-  v.plugin = { isLicensed: () => true };
+  v.plugin = helpers.entitle({});
   v.app = { metadataCache: { getFirstLinkpathDest: () => null } };
   v.initViewUI = () => {};
   v.requestSave = () => { throw new Error("must not save"); };
@@ -2136,4 +2137,137 @@ test("pasting a copied image file attaches it instead of creating path nodes", a
   assert.deepEqual(JSON.parse(JSON.stringify(pasted)), [[["/Users/me/Desktop/shot.jpg"], node.id]]);
   assert.equal(canvas.docData.root.children.length, before);
   assert.equal(node.children.length, 1, "no path node was added");
+});
+
+
+/* ---------- 1.9.0 ---------- */
+test("1.9 outline-only map is editable when the outline round-trips, prose stays read-only", () => {
+  const { helpers } = setupTestContext();
+  const raw = "---\ncrisp-mind: true\n---\n\n# 纯大纲\n- A\n  - A1\n- B\n";
+  assert.equal(helpers.inspectMindSource(raw), null);
+  assert.match(helpers.inspectMindSource(raw + "\n一段正文\n"), /缺少导图数据块/);
+  assert.match(helpers.inspectMindSource("---\ncrisp-mind: true\n---\n\n随便写的笔记\n"), /缺少导图数据块/);
+});
+
+test("1.9 saving an outline-only map writes the data block and keeps the outline", async () => {
+  const { helpers } = setupTestContext();
+  const v = Object.create(helpers.CrispMindEditView.prototype);
+  let disk = "---\ncrisp-mind: true\n---\n\n# 纯大纲\n- A\n- B\n";
+  v.file = { path: "t.mind.md", basename: "t.mind", parent: { path: "" } };
+  v.plugin = helpers.entitle({ settings: { autoBackup: false }, manifest: { id: "crisp-mind" } });
+  v.app = { vault: { configDir: ".obsidian", adapter: { exists: async () => true, mkdir: async () => {}, write: async () => {} }, process: async (f, fn) => { disk = fn(disk); } } };
+  v.initViewUI = () => {}; v.renderLockedView = () => {}; v.requestSave = () => {}; v.notifyPulseContribution = () => {};
+  v.setViewData(disk, true);
+  assert.equal(v.readOnly, false);
+  v.mindDoc.data.root.children[0].data.text = "A2"; v.dirty = true;
+  await v.save();
+  assert.match(disk, /CRISP-MIND-DATA-START/);
+  assert.match(disk, /^- A2$/m);
+  assert.equal(helpers.inspectMindSource(disk), null);
+});
+
+test("1.9 a .mind.md left in a markdown leaf switches to the mind view unless opted out", () => {
+  const exported = setupTestContext();
+  const PluginClass = exported.default || exported;
+  const plugin = Object.create(PluginClass.prototype);
+  const calls = [];
+  const leaf = path => { const l = { view: { file: { path } } }; l.setViewState = async state => calls.push([l.view.file.path, state.type, state.state.file]); return l; };
+  const a = leaf("a.mind.md"), b = leaf("b.md"), c = leaf("c.mind.md");
+  plugin.app = { workspace: { getLeavesOfType: type => (type === "markdown" ? [a, b, c] : []), activeLeaf: a } };
+  plugin.keepAsMarkdown(c);
+  plugin.convertMindLeaves();
+  assert.deepEqual(calls, [["a.mind.md", "crisp-mind-view", "a.mind.md"]]);
+  c.view.file.path = "d.mind.md"; // the opt-out belongs to the file it was made for
+  plugin.convertMindLeaves();
+  assert.deepEqual(calls.at(-1), ["d.mind.md", "crisp-mind-view", "d.mind.md"]);
+});
+
+test("1.9 relations keep arrow direction and dashes, render matching markers, and undo", () => {
+  const { canvas, helpers } = canvasFixture();
+  const [one, two, three] = canvas.docData.root.children;
+  canvas.docData.relations = [
+    { id: "r1", from: one.id, to: two.id, arrow: "both", dashed: true },
+    { id: "r2", from: two.id, to: three.id, arrow: "none" },
+    { id: "r3", from: one.id, to: three.id, arrow: "sideways", dashed: "yes" }
+  ];
+  helpers.normalizeMindAnnotations(canvas.docData);
+  canvas.saveState(); // the relations above are the history baseline for undo
+  const byId = Object.fromEntries(canvas.docData.relations.map(r => [r.id, r]));
+  assert.equal(byId.r1.arrow, "both"); assert.equal(byId.r1.dashed, true);
+  assert.equal(byId.r2.arrow, "none"); assert.equal(byId.r2.dashed, undefined);
+  assert.equal(byId.r3.arrow, undefined); assert.equal(byId.r3.dashed, undefined);
+  renderForReal(canvas, helpers);
+  const paths = canvas.relationsGroup.children.filter(n => n.tag === "path" && n.attrs.class === "crisp-mind-relation");
+  const [p1, p2, p3] = paths;
+  assert.ok(p1.attrs["marker-start"] && p1.attrs["marker-end"]); assert.ok(p1.attrs["stroke-dasharray"]);
+  assert.equal(p2.attrs["marker-start"], undefined); assert.equal(p2.attrs["marker-end"], undefined);
+  assert.ok(p3.attrs["marker-end"]); assert.equal(p3.attrs["marker-start"], undefined); assert.equal(p3.attrs["stroke-dasharray"], undefined);
+  assert.ok(canvas.setRelationStyle("r2", { arrow: "both", dashed: true }));
+  assert.equal(canvas.findRelation("r2").arrow, "both");
+  canvas.undo();
+  assert.equal(canvas.findRelation("r2").arrow, "none");
+  assert.equal(canvas.findRelation("r2").dashed, undefined);
+});
+
+// ---- 1.9.0 activation ----
+test("1.9 entitlement ignores instance flags and needs a manager this module registered", () => {
+  const { helpers } = setupTestContext();
+  const plugin = { settings: {}, isLicensed: () => true, licenseManager: { isLicensed: () => true, status: { valid: true } } };
+  assert.equal(helpers.mindEntitled(plugin), false);
+  helpers.entitle(plugin);
+  assert.equal(helpers.mindEntitled(plugin), true);
+  assert.equal(helpers.mindEntitled(Object.create(plugin)), false, "a look-alike object is not entitled");
+});
+
+test("1.9 unactivated views lock: no canvas, nothing saved, patched flags do not unlock", async () => {
+  const f = savedViewFixture();
+  let locked = 0, canvasBuilt = 0;
+  f.v.renderLockedView = () => locked++; f.v.initViewUI = () => canvasBuilt++;
+  f.v.plugin = { settings: { autoBackup: true }, manifest: { id: "crisp-mind" }, isLicensed: () => true, requireLicense: () => true, licenseManager: { status: { valid: true } } };
+  f.v.dirty = false;
+  f.v.setViewData(f.v.originalData, true);
+  assert.equal(f.v.locked, true); assert.equal(f.v.readOnly, true);
+  assert.equal(locked, 1); assert.equal(canvasBuilt, 0);
+  f.v.mindDoc.data.root.data.text = "Should not persist"; f.v.dirty = true;
+  await f.v.save();
+  assert.ok(!f.disk().includes("Should not persist"));
+});
+
+test("1.9 a signed code entitles, a forged one does not, and expiry ends it", async () => {
+  const { helpers } = setupTestContext(licensePublicPem);
+  const plugin = { app: {}, settings: {} };
+  let now = Date.parse("2030-01-01T00:00:00Z");
+  const manager = helpers.mindLicenseManagerFor(plugin, { now: () => now });
+  const forged = makeLicenseCode().replace(/\.(.)/, (m, c) => "." + (c === "A" ? "B" : "A"));
+  assert.equal((await manager.activate(forged)).valid, false);
+  assert.equal(helpers.mindEntitled(plugin), false);
+  assert.equal((await manager.activate(makeLicenseCode())).valid, true);
+  assert.equal(helpers.mindEntitled(plugin), true);
+  manager.status = { valid: false }; // instance status is display-only
+  assert.equal(helpers.mindEntitled(plugin), true);
+  manager.now = () => 0; // an instance clock is ignored
+  await manager.activate(makeLicenseCode({ expiresAt: "2030-01-02T00:00:00Z" }));
+  assert.equal(helpers.mindEntitled(plugin), true);
+  now = Date.parse("2030-01-03T00:00:00Z");
+  assert.equal(helpers.mindEntitled(plugin), false);
+});
+
+test("1.9 replacing crypto.subtle.verify after load cannot pass a forged code", async () => {
+  const real = globalThis.crypto.subtle;
+  const subtle = { importKey: real.importKey.bind(real), verify: real.verify.bind(real), digest: real.digest?.bind(real) };
+  const { helpers } = setupTestContext(licensePublicPem, { crypto: { subtle, getRandomValues: a => globalThis.crypto.getRandomValues(a) } });
+  subtle.verify = async () => true;
+  const forged = makeLicenseCode().split(".")[0] + "." + Buffer.alloc(64, 7).toString("base64url");
+  const manager = helpers.mindLicenseManagerFor({ app: {}, settings: {} });
+  assert.equal((await manager.activate(forged)).valid, false);
+});
+
+test("1.9 a verifier that accepts everything at load time disables activation", async () => {
+  const real = globalThis.crypto.subtle;
+  const subtle = { importKey: real.importKey.bind(real), verify: async () => true };
+  const { helpers } = setupTestContext(licensePublicPem, { crypto: { subtle, getRandomValues: a => globalThis.crypto.getRandomValues(a) } });
+  const plugin = { app: {}, settings: {} };
+  const result = await helpers.mindLicenseManagerFor(plugin).activate(makeLicenseCode());
+  assert.equal(result.valid, false);
+  assert.equal(helpers.mindEntitled(plugin), false);
 });

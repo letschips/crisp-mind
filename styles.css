@@ -190,6 +190,47 @@ body.is-translucent .crisp-mind-view {
   font-size: 11px;
 }
 
+/* Unactivated: a centred card instead of the canvas. */
+.crisp-mind-locked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.crisp-mind-locked__icon {
+  color: var(--text-muted);
+}
+
+.crisp-mind-locked__icon svg {
+  width: 40px;
+  height: 40px;
+}
+
+.crisp-mind-locked h3 {
+  margin: 4px 0 0;
+}
+
+.crisp-mind-locked p {
+  max-width: 360px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+}
+
+.crisp-mind-locked__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
 /* Keep Baseline's native button fill/shadow out of this glass toolbar only.
    Icons remain full-contrast; color appears on interaction, not at rest. */
 .crisp-mind-floating-toolbar > button:is(.crisp-mind-btn, .crisp-mind-zoom-badge) {
