@@ -1930,3 +1930,55 @@ body .modal.crisp-mind-image-modal-shell {
   border-radius: 6px;
   cursor: zoom-in;
 }
+
+/* --- Embedded maps: ![[map.mind.md]] in other notes (read-only) --- */
+.crisp-mind-file-embed.markdown-embed,
+.crisp-mind-file-embed {
+  display: block;
+  padding: 0;
+  border: none;
+}
+
+.crisp-mind-embed {
+  position: relative;
+  width: 100%;
+  margin: 4px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  background-color: var(--background-primary);
+  transition: border-color 0.15s ease;
+}
+
+.crisp-mind-embed.is-active {
+  border-color: var(--interactive-accent);
+}
+
+.crisp-mind-embed-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.crisp-mind-embed-open {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.crisp-mind-embed:hover .crisp-mind-embed-open,
+.crisp-mind-embed-open:focus-visible {
+  opacity: 1;
+}
+
+.crisp-mind-embed.is-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}

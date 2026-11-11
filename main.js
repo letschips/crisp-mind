@@ -2021,7 +2021,7 @@ class CrispMindCanvas {
   }
 
   clearBranchFocus() {
-    if (!this.branchFocusId) return;
+    if (!this.branchFocusId || this.options.pinBranchFocus) return;
     this.branchFocusId = null;
     this.render();
     this.resetZoom();
@@ -2132,7 +2132,8 @@ class CrispMindCanvas {
       const observer = new this.window.ResizeObserver(() => {
         const width = this.container.clientWidth, height = this.container.clientHeight;
         if (!width || !height) return;
-        if (!this.viewportSize) this.resetZoom();
+        // Embeds size their own frame, so every resize refits instead of keeping the old centre.
+        if (!this.viewportSize || this.options.fitOnResize) this.resetZoom();
         else {
           this.commitEditor?.();
           this.translateX += (width - this.viewportSize.width) / 2;
@@ -3916,29 +3917,7 @@ class CrispMindCanvas {
       this.isPanning = false;
     });
 
-    this.listen(this.container, "wheel", (e) => {
-      // Floating panels scroll their own content; only the bare canvas pans or zooms.
-      if (this.editor || e.target.closest?.("button, input, textarea, select, .crisp-mind-node-island, .crisp-mind-floating-toolbar, .crisp-mind-outline-panel, .crisp-mind-inspector, .crisp-mind-branch-bar, .crisp-mind-presentation-bar, .crisp-mind-license-banner")) return;
-      e.preventDefault(); e.stopPropagation();
-      if (!e.ctrlKey && !e.metaKey) {
-        const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientHeight : 1;
-        this.translateX -= e.deltaX * unit; this.translateY -= e.deltaY * unit;
-        this.updateTransform(); return;
-      }
-      const zoomFactor = Math.exp(-e.deltaY * 0.01);
-      const newScale = Math.min(2.5, Math.max(0.05, this.scale * zoomFactor));
-
-      const rect = this.container.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left;
-      const mouseY = e.clientY - rect.top;
-
-      this.translateX = mouseX - (mouseX - this.translateX) * (newScale / this.scale);
-      this.translateY = mouseY - (mouseY - this.translateY) * (newScale / this.scale);
-      this.scale = newScale;
-
-      this.updateTransform();
-      if (this.options.onZoom) this.options.onZoom(this.scale);
-    }, { passive: false });
+    this.listen(this.container, "wheel", (e) => this.onWheel(e), { passive: false });
 
     this.listen(this.container, "keydown", (e) => {
       if (this.presentationActive && !e.target.closest?.("input, textarea, [contenteditable=true]")) {
@@ -4002,10 +3981,37 @@ class CrispMindCanvas {
     });
   }
 
+  // An embedded map leaves the wheel to the page until the reader activates it (options.wheelGate).
+  onWheel(e) {
+    if (this.options.wheelGate && !this.options.wheelGate(e)) return;
+    // Floating panels scroll their own content; only the bare canvas pans or zooms.
+    if (this.editor || e.target.closest?.("button, input, textarea, select, .crisp-mind-node-island, .crisp-mind-floating-toolbar, .crisp-mind-outline-panel, .crisp-mind-inspector, .crisp-mind-branch-bar, .crisp-mind-presentation-bar, .crisp-mind-license-banner")) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!e.ctrlKey && !e.metaKey) {
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientHeight : 1;
+      this.translateX -= e.deltaX * unit; this.translateY -= e.deltaY * unit;
+      this.updateTransform(); return;
+    }
+    const zoomFactor = Math.exp(-e.deltaY * 0.01);
+    const newScale = Math.min(2.5, Math.max(0.05, this.scale * zoomFactor));
+
+    const rect = this.container.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    this.translateX = mouseX - (mouseX - this.translateX) * (newScale / this.scale);
+    this.translateY = mouseY - (mouseY - this.translateY) * (newScale / this.scale);
+    this.scale = newScale;
+
+    this.updateTransform();
+    if (this.options.onZoom) this.options.onZoom(this.scale);
+  }
+
   resetZoom() {
     const bounds = this.getBounds();
     const width = this.container.clientWidth || 800, height = this.container.clientHeight || 600;
-    this.scale = Math.max(0.05, Math.min(1.25, (width - 80) / bounds.width, (height - 160) / bounds.height));
+    const inset = this.options.zoomInset || { x: 80, y: 160 };
+    this.scale = Math.max(0.05, Math.min(1.25, (width - inset.x) / bounds.width, (height - inset.y) / bounds.height));
     this.translateX = (width - bounds.width * this.scale) / 2 - bounds.x * this.scale;
     this.translateY = (height - bounds.height * this.scale) / 2 - bounds.y * this.scale;
     this.updateTransform();
@@ -5650,6 +5656,164 @@ async function inlineSvgImages(svgString, load) {
   return out;
 }
 
+/* ==========================================================================
+   Embedded maps: ![[map.mind.md]] and ![[map.mind.md#^id]] in other notes
+   ========================================================================== */
+
+const MIND_EMBED_MIN_HEIGHT = 200;
+const MIND_EMBED_MAX_HEIGHT = 480;
+
+// Height for a read-only embed: the map is scaled to the note's width (never above 100%),
+// and the frame follows its shape within a range that keeps the note readable.
+function mindEmbedHeight(bounds, width) {
+  if (!bounds || !(bounds.width > 0) || !(bounds.height > 0)) return 280;
+  const scale = Math.min(1, Math.max(0.05, (width - 32) / bounds.width));
+  return Math.max(MIND_EMBED_MIN_HEIGHT, Math.min(MIND_EMBED_MAX_HEIGHT, Math.round(bounds.height * scale + 48)));
+}
+
+// Created by Obsidian's embed registry for reading view, live preview, canvas cards and hover
+// previews. Read-only: the full view stays the only place that writes the file.
+class CrispMindEmbed extends Component {
+  constructor(plugin, ctx, file, subpath = "") {
+    super();
+    this.plugin = plugin;
+    this.ctx = ctx;
+    this.file = file;
+    this.subpath = subpath || "";
+    this.canvas = null;
+    this.wrap = null;
+    this.active = false;
+    this.data = null;
+  }
+
+  get app() { return this.plugin.app; }
+
+  onload() {
+    this.registerEvent(this.app.vault.on("modify", file => { if (file === this.file) void this.loadFile(); }));
+    this.registerEvent(this.app.workspace.on("css-change", () => {
+      if (!this.canvas) return;
+      this.canvas.theme = getComputedThemeConfig(this.canvas.docData.theme || "crisp-obsidian");
+      this.canvas.render();
+    }));
+  }
+
+  onunload() {
+    this.visibility?.disconnect();
+    this.resizer?.disconnect();
+    this.canvas?.destroy();
+    this.canvas = null;
+    this.wrap?.remove();
+    this.wrap = null;
+  }
+
+  openMap() {
+    void this.app.workspace.openLinkText(this.file.path + (mindBlockIdNodeId(this.data?.root, this.subpath) ? this.subpath : ""), this.ctx.sourcePath || "", false);
+  }
+
+  frame() {
+    if (!this.wrap) {
+      const host = this.ctx.containerEl;
+      host.addClass("crisp-mind-file-embed");
+      this.wrap = host.createDiv({ cls: "crisp-mind-embed" });
+      // Keep clicks inside the frame: in live preview they would otherwise move the cursor into the embed source.
+      for (const type of ["mousedown", "click"]) this.wrap.addEventListener(type, e => e.stopPropagation());
+    }
+    return this.wrap;
+  }
+
+  renderMessage(text) {
+    this.canvas?.destroy();
+    this.canvas = null;
+    const wrap = this.frame();
+    wrap.empty();
+    wrap.style.height = "";
+    wrap.addClass("is-message");
+    wrap.createSpan({ cls: "crisp-mind-embed-message", text });
+    const button = wrap.createEl("button", { text: "打开导图" });
+    button.addEventListener("click", () => this.openMap());
+  }
+
+  async loadFile() {
+    if (!mindEntitled(this.plugin)) { this.renderMessage(`Crisp Mind 未激活 · ${this.file.basename.replace(/\.mind$/, "")}`); return; }
+    let raw;
+    try { raw = await this.app.vault.cachedRead(this.file); } catch (_) { this.renderMessage("读取导图失败"); return; }
+    const warning = inspectMindSource(raw);
+    if (warning && /损坏|超过安全/.test(warning)) { this.renderMessage(warning); return; }
+    try { this.data = parseMindMarkdown(raw).data; } catch (_) { this.renderMessage("导图数据损坏"); return; }
+    const wrap = this.frame();
+    wrap.removeClass("is-message");
+    if (this.canvas) { this.renderCanvas(); return; }
+    // Draw on first sight: a long note with many maps only pays for the ones that are read.
+    const IO = wrap.win?.IntersectionObserver || (typeof IntersectionObserver === "function" ? IntersectionObserver : null);
+    if (!IO) { this.renderCanvas(); return; }
+    this.visibility?.disconnect();
+    this.visibility = new IO(entries => {
+      if (!entries.some(entry => entry.isIntersecting)) return;
+      this.visibility.disconnect();
+      this.visibility = null;
+      this.renderCanvas();
+    }, { rootMargin: "200px" });
+    this.visibility.observe(wrap);
+  }
+
+  renderCanvas() {
+    const wrap = this.frame();
+    if (!this.data) return;
+    this.canvas?.destroy();
+    wrap.empty();
+    if (!wrap.style.height) wrap.style.height = "280px";
+    const stage = wrap.createDiv({ cls: "crisp-mind-embed-stage" });
+    const focusId = mindBlockIdNodeId(this.data.root, this.subpath);
+    const canvas = new CrispMindCanvas(stage, this.data, {
+      readOnly: true,
+      vaultName: this.app.vault.getName(),
+      zoomInset: { x: 32, y: 32 },
+      fitOnResize: true,
+      pinBranchFocus: !!focusId,
+      wheelGate: () => this.active,
+      resolveImage: path => {
+        const file = path ? this.app.vault.getAbstractFileByPath(path) : null;
+        return file && isMindImagePath(file.path) ? { url: this.app.vault.getResourcePath(file) } : null;
+      },
+      onOpenLink: target => { void this.app.workspace.openLinkText(target, this.file.path, false); },
+      onHoverLink: (event, target) => this.app.workspace.trigger("hover-link", {
+        event, source: VIEW_TYPE_CRISP_MIND, hoverParent: this, targetEl: event.target, linktext: target, sourcePath: this.file.path
+      })
+    });
+    this.canvas = canvas;
+    if (focusId) {
+      // Set directly: setBranchFocus would focus the canvas and pull the cursor out of the host note.
+      canvas.branchFocusId = focusId;
+      canvas.render();
+    }
+    const open = wrap.createEl("button", { cls: "crisp-mind-embed-open clickable-icon", attr: { "aria-label": "在 Crisp Mind 中打开", "data-tooltip-position": "top" } });
+    setIcon(open, "maximize-2");
+    open.addEventListener("click", () => this.openMap());
+    wrap.addEventListener("pointerdown", () => { this.active = true; wrap.addClass("is-active"); });
+    wrap.addEventListener("pointerleave", () => { this.active = false; wrap.removeClass("is-active"); });
+    this.fit();
+    this.resizer?.disconnect();
+    const RO = wrap.win?.ResizeObserver || (typeof ResizeObserver === "function" ? ResizeObserver : null);
+    if (RO) {
+      let lastWidth = wrap.clientWidth;
+      this.resizer = new RO(() => { if (wrap.clientWidth && wrap.clientWidth !== lastWidth) { lastWidth = wrap.clientWidth; this.fit(); } });
+      this.resizer.observe(wrap);
+    }
+  }
+
+  fit() {
+    const canvas = this.canvas, wrap = this.wrap;
+    if (!canvas || !wrap || !wrap.clientWidth) return;
+    const inCanvasCard = !!this.ctx.containerEl.closest?.(".canvas-node");
+    if (!inCanvasCard) {
+      canvas.updateTransform?.();
+      const bounds = canvas.getBounds();
+      wrap.style.height = `${mindEmbedHeight(bounds, wrap.clientWidth)}px`;
+    }
+    canvas.resetZoom();
+  }
+}
+
 class CrispMindExporter {
   constructor(view) {
     this.view = view;
@@ -6481,6 +6645,7 @@ class CrispMindPlugin extends Plugin {
       leafProto.openFile = openFile;
       this.register(() => { if (leafProto.openFile === openFile) leafProto.openFile = originalOpenFile; });
     }
+    this.registerMindEmbeds();
     this.registerEvent(this.app.workspace.on("file-open", () => this.convertMindLeaves()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.convertMindLeaves()));
 
@@ -6534,6 +6699,25 @@ class CrispMindPlugin extends Plugin {
       const subpath = pending && pending.path === path && Date.now() - pending.at < 10000 ? pending.subpath : null;
       void leaf.setViewState({ type: VIEW_TYPE_CRISP_MIND, state: { file: path }, active: workspace.activeLeaf === leaf }, subpath ? { subpath } : undefined);
     }
+  }
+
+  // Obsidian has one embed creator per extension. Wrap the Markdown one so .mind.md embeds draw the
+  // map and every other note goes to whatever creator was there (core or another plugin's wrapper).
+  registerMindEmbeds() {
+    const registry = this.app?.embedRegistry;
+    const previous = registry?.embedByExtension?.md;
+    if (typeof registry?.registerExtension !== "function" || typeof previous !== "function") return;
+    const creator = (ctx, file, subpath) => file?.path?.endsWith(".mind.md")
+      ? new CrispMindEmbed(this, ctx, file, subpath)
+      : previous(ctx, file, subpath);
+    registry.unregisterExtension("md");
+    registry.registerExtension("md", creator);
+    this.register(() => {
+      // Another plugin may have wrapped ours since; never put back a creator over theirs.
+      if (registry.embedByExtension?.md !== creator) return;
+      registry.unregisterExtension("md");
+      registry.registerExtension("md", previous);
+    });
   }
 
   rememberMindSubpath(leaf, file, openState) {

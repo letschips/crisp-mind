@@ -89,7 +89,8 @@ function setupTestContext(publicKeyPem, overrides = {}) {
       if (mod === "util") return require("util");
       if (mod === "fs") return require("fs");
       if (mod === "path") return require("path");
-      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, Menu, addIcon: () => {}, setIcon: () => {} };
+      class Component { registerEvent() {} register() {} load() {} unload() {} }
+      return { Plugin, ItemView, TextFileView, Setting, PluginSettingTab, Notice, Modal, TFile, Menu, Component, addIcon: () => {}, setIcon: () => {} };
     },
     URL,
     module: { exports: {} },
@@ -137,7 +138,7 @@ function setupTestContext(publicKeyPem, overrides = {}) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindEmbedHeight: typeof mindEmbedHeight === \"undefined\" ? undefined : mindEmbedHeight, CrispMindEmbed: typeof CrispMindEmbed === \"undefined\" ? undefined : CrispMindEmbed, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -2405,4 +2406,77 @@ test("the mind view clears the pending subpath once it has selected the node", (
   assert.equal(canvas.selectedNodeId, node.id);
   assert.deepEqual(calls, [node.id]);
   assert.equal(view.pendingSubpath, null);
+});
+
+// ---- Embedded maps (1.11.0) ----
+test("map embeds take over .mind.md only and hand every other note back", () => {
+  const exported = setupTestContext();
+  const plugin = Object.create((exported.default || exported).prototype);
+  const unloads = [];
+  plugin.register = fn => unloads.push(fn);
+  const original = () => "markdown-embed";
+  const registry = { embedByExtension: { md: original },
+    registerExtension(ext, fn) { this.embedByExtension[ext] = fn; },
+    unregisterExtension(ext) { delete this.embedByExtension[ext]; } };
+  plugin.app = { embedRegistry: registry };
+  plugin.registerMindEmbeds();
+  const creator = registry.embedByExtension.md;
+  assert.notEqual(creator, original);
+  assert.equal(creator({ containerEl: {} }, { path: "Notes/a.md", extension: "md" }, ""), "markdown-embed");
+  const embed = creator({ containerEl: {} }, { path: "Maps/a.mind.md", extension: "md" }, "#^k1");
+  assert.ok(embed instanceof exported.helpers.CrispMindEmbed);
+  assert.equal(embed.subpath, "#^k1");
+  unloads.forEach(fn => fn());
+  assert.equal(registry.embedByExtension.md, original, "restored on unload");
+});
+
+test("unloading leaves a newer embed wrapper from another plugin in place", () => {
+  const exported = setupTestContext();
+  const plugin = Object.create((exported.default || exported).prototype);
+  const unloads = [];
+  plugin.register = fn => unloads.push(fn);
+  const registry = { embedByExtension: { md: () => "md" },
+    registerExtension(ext, fn) { this.embedByExtension[ext] = fn; },
+    unregisterExtension(ext) { delete this.embedByExtension[ext]; } };
+  plugin.app = { embedRegistry: registry };
+  plugin.registerMindEmbeds();
+  const other = () => "other plugin";
+  registry.embedByExtension.md = other;
+  unloads.forEach(fn => fn());
+  assert.equal(registry.embedByExtension.md, other);
+});
+
+test("embed height follows the map's shape within the allowed range", () => {
+  const { helpers } = setupTestContext();
+  assert.equal(helpers.mindEmbedHeight({ width: 400, height: 200 }, 700), 248);
+  assert.equal(helpers.mindEmbedHeight({ width: 1600, height: 200 }, 700), 200, "wide maps never collapse below the minimum");
+  assert.equal(helpers.mindEmbedHeight({ width: 400, height: 2000 }, 700), 480, "tall maps are capped");
+  assert.equal(helpers.mindEmbedHeight(null, 700), 280);
+});
+
+test("the wheel scrolls the page until an embedded map is activated", () => {
+  const { canvas } = canvasFixture();
+  let active = false, prevented = 0;
+  canvas.options.wheelGate = () => active;
+  canvas.updateTransform = () => {};
+  const wheel = () => canvas.onWheel({ deltaX: 0, deltaY: 40, deltaMode: 0, target: { closest: () => null },
+    preventDefault() { prevented++; }, stopPropagation() {} });
+  const before = canvas.translateY;
+  wheel();
+  assert.equal(prevented, 0);
+  assert.equal(canvas.translateY, before);
+  active = true;
+  wheel();
+  assert.equal(prevented, 1);
+  assert.equal(canvas.translateY, before - 40);
+});
+
+test("fitting an embedded map uses its own small insets", () => {
+  const { canvas } = canvasFixture();
+  canvas.updateTransform = () => {};
+  canvas.getBounds = () => ({ x: 0, y: 0, width: 600, height: 200 });
+  canvas.container = { clientWidth: 664, clientHeight: 264 };
+  canvas.options.zoomInset = { x: 64, y: 64 };
+  canvas.resetZoom();
+  assert.equal(canvas.scale, 1);
 });
