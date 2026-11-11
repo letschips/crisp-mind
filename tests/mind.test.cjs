@@ -137,7 +137,7 @@ function setupTestContext(publicKeyPem, overrides = {}) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -2270,4 +2270,139 @@ test("1.9 a verifier that accepts everything at load time disables activation", 
   const result = await helpers.mindLicenseManagerFor(plugin).activate(makeLicenseCode());
   assert.equal(result.valid, false);
   assert.equal(helpers.mindEntitled(plugin), false);
+});
+
+// ---- Node block links (1.10.0) ----
+test("node block id round-trips through the outline and keeps the label clean", () => {
+  const { helpers } = setupTestContext();
+  const tree = helpers.markdownOutlineToTree("# Root\n- One ^abc123\n  - Pic ![[img/a.png]] ^pic-1\n- Two");
+  const [one, two] = tree.children;
+  assert.equal(one.data.text, "One");
+  assert.equal(one.data.blockId, "abc123");
+  assert.equal(one.children[0].data.text, "Pic");
+  assert.equal(one.children[0].data.image.path, "img/a.png");
+  assert.equal(one.children[0].data.blockId, "pic-1");
+  assert.equal(two.data.blockId, undefined);
+  const outline = helpers.treeToMarkdownOutline(tree);
+  assert.match(outline, /^- One \^abc123$/m);
+  assert.match(outline, /^  - Pic !\[\[img\/a\.png\]\] \^pic-1$/m);
+  assert.match(outline, /^- Two$/m);
+});
+
+test("a caret that is not a trailing block id stays part of the node text", () => {
+  const { helpers } = setupTestContext();
+  const tree = helpers.markdownOutlineToTree("# Root\n- a ^b c\n- x^abc\n- bad ^a_b");
+  assert.equal(tree.children.map(n => n.data.text).join("|"), "a ^b c|x^abc|bad ^a_b");
+  assert.ok(tree.children.every(n => n.data.blockId === undefined));
+});
+
+test("root never carries a block id and saved maps with block ids stay editable", () => {
+  const { helpers } = setupTestContext();
+  const doc = helpers.parseMindMarkdown("# Root\n- One\n- Two");
+  doc.data.root.data.blockId = "rootid";
+  doc.data.root.children[0].data.blockId = "k1";
+  const raw = helpers.assembleMindMarkdown(doc);
+  assert.match(raw, /^# Root$/m);
+  assert.match(raw, /^- One \^k1$/m);
+  assert.equal(helpers.inspectMindSource(raw), null);
+  assert.equal(helpers.mindOutlineIsLossless("# Root\n- One ^k1\n- Two\n"), true);
+  const reopened = helpers.parseMindMarkdown(raw);
+  assert.equal(reopened.data.root.children[0].data.blockId, "k1");
+  assert.equal(reopened.data.root.data.blockId, undefined);
+});
+
+test("repair drops malformed and duplicate block ids", () => {
+  const { helpers } = setupTestContext();
+  const data = helpers.validateAndRepairTree({ root: { id: "r", data: { text: "R" }, children: [
+    { id: "a", data: { text: "A", blockId: "same" }, children: [] },
+    { id: "b", data: { text: "B", blockId: "same" }, children: [] },
+    { id: "c", data: { text: "C", blockId: "has space" }, children: [] }
+  ] } });
+  assert.equal(data.root.children.map(n => String(n.data.blockId)).join("|"), "same|undefined|undefined");
+});
+
+test("copy, paste and branch extraction never duplicate block ids", () => {
+  const { canvas, helpers } = canvasFixture();
+  const one = canvas.docData.root.children[0];
+  one.data.blockId = "keep1";
+  one.children[0].data.blockId = "keep2";
+  const text = canvas.copyBranchText(one.id);
+  assert.doesNotMatch(text, /\^keep/);
+  canvas.pasteBranchText(canvas.clipboardBranchSnapshot.text, canvas.docData.root.id);
+  const pasted = canvas.docData.root.children.at(-1);
+  assert.equal(pasted.data.blockId, undefined);
+  assert.equal(pasted.children[0].data.blockId, undefined);
+  assert.equal(one.data.blockId, "keep1");
+  canvas.pasteBranchText("- Foreign ^zzz", canvas.docData.root.id);
+  assert.equal(canvas.docData.root.children.at(-1).data.text, "Foreign");
+  assert.equal(canvas.docData.root.children.at(-1).data.blockId, undefined);
+  const { content } = helpers.extractNodeToTopicContent(one);
+  assert.doesNotMatch(content, /\^keep/);
+});
+
+test("a link subpath resolves to the node with that block id", () => {
+  const { helpers } = setupTestContext();
+  const tree = helpers.markdownOutlineToTree("# Root\n- One\n  - Deep ^deep1");
+  const deep = tree.children[0].children[0];
+  assert.equal(helpers.mindBlockIdNodeId(tree, "#^deep1"), deep.id);
+  assert.equal(helpers.mindBlockIdNodeId(tree, "^deep1"), deep.id);
+  assert.equal(helpers.mindBlockIdNodeId(tree, "#^missing"), null);
+  assert.equal(helpers.mindBlockIdNodeId(tree, "#Heading"), null);
+});
+
+test("copy node link assigns one block id, saves it and copies a wikilink", async () => {
+  const { canvas, helpers } = canvasFixture();
+  const node = canvas.docData.root.children[0];
+  const copied = [];
+  const view = {
+    readOnly: false,
+    file: { path: "Maps/Plan.mind.md", basename: "Plan.mind" },
+    app: { vault: { getName: () => "V" }, metadataCache: { fileToLinktext: () => "Maps/Plan.mind.md" } },
+    canvasController: canvas,
+    writeClipboard: async text => { copied.push(text); }
+  };
+  await helpers.CrispMindEditView.prototype.copyNodeLink.call(view, node.id);
+  const id = node.data.blockId;
+  assert.match(id, /^[a-z0-9]{6}$/);
+  assert.deepEqual(copied, [`[[Maps/Plan.mind.md#^${id}|One]]`]);
+  await helpers.CrispMindEditView.prototype.copyNodeLink.call(view, node.id);
+  assert.equal(node.data.blockId, id, "existing id is reused");
+  await helpers.CrispMindEditView.prototype.copyNodeLink.call(view, canvas.docData.root.id);
+  assert.equal(copied.at(-1), "[[Maps/Plan.mind.md|Root]]");
+  assert.equal(canvas.docData.root.data.blockId, undefined);
+});
+
+test("a block link that opens a map as Markdown keeps its subpath through the view switch", () => {
+  const exported = setupTestContext();
+  const PluginClass = exported.default || exported;
+  const plugin = Object.create(PluginClass.prototype);
+  const calls = [];
+  const leaf = path => { const l = { view: { file: { path } } }; l.setViewState = async (state, eState) => calls.push([l.view.file.path, eState?.subpath]); return l; };
+  const a = leaf("a.mind.md"), b = leaf("b.mind.md");
+  plugin.app = { workspace: { getLeavesOfType: type => (type === "markdown" ? [a, b] : []), activeLeaf: a } };
+  plugin.rememberMindSubpath(a, { path: "a.mind.md" }, { eState: { subpath: "#^k1" } });
+  plugin.rememberMindSubpath(b, { path: "other.mind.md" }, { eState: { subpath: "#^zz" } });
+  plugin.convertMindLeaves();
+  assert.deepEqual(calls.map(c => c.join("|")), ["a.mind.md|#^k1", "b.mind.md|"]);
+  plugin.convertMindLeaves(); // layout-change can convert the same leaf twice before it switches
+  assert.equal(calls.at(-2)[1], "#^k1");
+  plugin.rememberMindSubpath(a, { path: "a.mind.md" }, {}); // a plain open clears it
+  plugin.convertMindLeaves();
+  assert.equal(calls.at(-2)[1], undefined);
+});
+
+test("the mind view clears the pending subpath once it has selected the node", () => {
+  const { canvas, helpers } = canvasFixture();
+  const exported = setupTestContext();
+  const node = canvas.docData.root.children[1];
+  node.data.blockId = "two2";
+  const leaf = {}, calls = [];
+  const plugin = Object.create((exported.default || exported).prototype);
+  plugin.rememberMindSubpath(leaf, { path: "m.mind.md" }, { eState: { subpath: "#^two2" } });
+  canvas.centerOnNode = id => calls.push(id);
+  const view = { leaf, canvasController: canvas, pendingSubpath: "#^two2", handleSelectionChange() {} };
+  helpers.CrispMindEditView.prototype.applyPendingSubpath.call(view);
+  assert.equal(canvas.selectedNodeId, node.id);
+  assert.deepEqual(calls, [node.id]);
+  assert.equal(view.pendingSubpath, null);
 });

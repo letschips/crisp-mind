@@ -32,6 +32,8 @@ const addIcon = obsidian.addIcon || (() => {});
 
 const VIEW_TYPE_CRISP_MIND = "crisp-mind-view";
 const MIND_MARKDOWN_LEAVES = new WeakMap();
+// leaf -> {path, subpath, at}: the #^id of a link that opened a .mind.md as Markdown, until the view switch.
+const MIND_PENDING_SUBPATHS = new WeakMap();
 const CRISP_MIND_ICON_ID = "crisp-mind";
 
 const CRISP_MIND_SVG = `<svg class="crisp-mind-brand-icon" viewBox="0 0 75 75" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" preserveAspectRatio="xMidYMid meet">
@@ -499,6 +501,12 @@ function markdownOutlineToTree(markdown) {
     const split = splitOutlineImage(text);
     return split.image ? { text: split.text, image: split.image } : { text };
   };
+  const withBlockId = text => {
+    const split = splitOutlineBlockId(text);
+    const data = withImage(split.text);
+    if (split.blockId) data.blockId = split.blockId;
+    return data;
+  };
   const root = { id: generateUid(), data: withImage(rootText), children: [] };
   if (items.length === 0) {
     return root;
@@ -507,7 +515,7 @@ function markdownOutlineToTree(markdown) {
   const stack = [{ node: root, indent: -1 }];
 
   for (const item of items) {
-    const newNode = { id: generateUid(), data: withImage(item.text), children: [] };
+    const newNode = { id: generateUid(), data: withBlockId(item.text), children: [] };
     while (stack.length > 1 && stack[stack.length - 1].indent >= item.indent) {
       stack.pop();
     }
@@ -568,6 +576,36 @@ function splitOutlineImage(text) {
   return { text: rest, image };
 }
 
+// ---- Node block links ----
+// A node that has been linked to carries an Obsidian block id: data.blockId in the JSON block and a
+// trailing " ^id" on its outline line, so [[map#^id]] resolves and shows up in backlinks. Ids are
+// created on demand (copy node link), never for the root, and never copied with a branch.
+const MIND_BLOCK_ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+function splitOutlineBlockId(text) {
+  const source = String(text || "");
+  const match = source.match(/\s\^([A-Za-z0-9-]{1,64})\s*$/);
+  if (!match) return { text: source, blockId: null };
+  const rest = source.slice(0, match.index).trimEnd();
+  return rest ? { text: rest, blockId: match[1] } : { text: source, blockId: null };
+}
+function newMindBlockId(root) {
+  const used = new Set();
+  const walk = n => { if (n?.data?.blockId) used.add(n.data.blockId); (n?.children || []).forEach(walk); };
+  walk(root);
+  for (;;) {
+    const id = Math.random().toString(36).slice(2, 8);
+    if (id.length === 6 && !used.has(id)) return id;
+  }
+}
+function mindBlockIdNodeId(root, subpath) {
+  const match = String(subpath || "").match(/^#?\^([A-Za-z0-9-]{1,64})$/);
+  if (!match) return null;
+  let found = null;
+  const walk = n => { if (found || !n) return; if (n.data?.blockId === match[1]) found = n.id; (n.children || []).forEach(walk); };
+  walk(root);
+  return found;
+}
+
 // Notes are plain text. For the hover preview, a line that is just an image path the vault can
 // resolve becomes an embed, so "对应原图：images/01.jpeg" shows the picture itself.
 function noteMarkdownForPreview(note, resolveImage) {
@@ -607,10 +645,12 @@ function clipboardImagePaths({ fileUrl = "", text = "" } = {}, exists = () => fa
   });
 }
 
-function outlineNodeLine(node) {
+function outlineNodeLine(node, withBlockId = true) {
   const text = outlineNodeText(node?.data?.text);
   const image = normalizeMindImage(node?.data?.image);
-  return image ? `${text} ![[${image.path}]]` : text;
+  const line = image ? `${text} ![[${image.path}]]` : text;
+  const blockId = node?.data?.blockId;
+  return withBlockId && typeof blockId === "string" && MIND_BLOCK_ID_RE.test(blockId) ? `${line} ^${blockId}` : line;
 }
 
 function mindImageBox(image) {
@@ -624,24 +664,24 @@ function mindImageBox(image) {
   };
 }
 
-function treeToMarkdownOutline(rootNode, level = 0) {
+function treeToMarkdownOutline(rootNode, level = 0, withBlockIds = true) {
   if (!rootNode || !rootNode.data) return "";
   let out = "";
   if (level === 0) {
-    out += `# ${outlineNodeLine(rootNode) || "Central Topic"}\n`;
+    out += `# ${outlineNodeLine(rootNode, false) || "Central Topic"}\n`;
     if (Array.isArray(rootNode.children)) {
       for (const child of rootNode.children) {
-        out += treeToMarkdownOutline(child, 1);
+        out += treeToMarkdownOutline(child, 1, withBlockIds);
       }
     }
     return out;
   }
 
   const indent = "  ".repeat(level - 1);
-  out += `${indent}- ${outlineNodeLine(rootNode)}\n`;
+  out += `${indent}- ${outlineNodeLine(rootNode, withBlockIds)}\n`;
   if (Array.isArray(rootNode.children)) {
     for (const child of rootNode.children) {
-      out += treeToMarkdownOutline(child, level + 1);
+      out += treeToMarkdownOutline(child, level + 1, withBlockIds);
     }
   }
   return out;
@@ -655,6 +695,7 @@ function validateAndRepairTree(docData) {
     docData.root = { id: generateUid(), data: { text: "Central Topic" }, children: [] };
   }
 
+  const seenBlockIds = new Set();
   function repairNode(node, isRoot = false) {
     if (!node || typeof node !== "object") {
       return { id: generateUid(), data: { text: isRoot ? "Central Topic" : "Topic" }, children: [] };
@@ -678,6 +719,9 @@ function validateAndRepairTree(docData) {
     const normalizedImage = normalizeMindImage(node.data.image);
     if (normalizedImage) node.data.image = normalizedImage;
     else delete node.data.image;
+    const blockId = node.data.blockId;
+    if (!isRoot && typeof blockId === "string" && MIND_BLOCK_ID_RE.test(blockId) && !seenBlockIds.has(blockId)) seenBlockIds.add(blockId);
+    else delete node.data.blockId;
     if (!Array.isArray(node.children)) {
       node.children = [];
     } else {
@@ -976,7 +1020,7 @@ function inspectMindSource(raw) {
     const flattenTexts = (node) => {
       const result = [];
       const walk = (n, depth) => {
-        result.push(`${depth}:${outlineNodeLine(n).trim()}`);
+        result.push(`${depth}:${outlineNodeLine(n, depth > 0).trim()}`);
         (n.children || []).forEach(c => walk(c, depth + 1));
       };
       if (node) walk(node, 0);
@@ -1053,7 +1097,7 @@ function extractNodeToTopicContent(node) {
     title = raw.replace(/\[\[[^\]]+\]\]/g, alias).trim();
   }
   title = title.replace(/[\\/:*?"<>|#^\[\]\r\n]/g, " ").trim().replace(/\s+/g, " ") || "Untitled Topic";
-  const outline = treeToMarkdownOutline(node);
+  const outline = treeToMarkdownOutline(node, 0, false);
   const content = `---
 crisp-type: topic-note
 title: ${JSON.stringify(title)}
@@ -2436,7 +2480,7 @@ class CrispMindCanvas {
     const node = this.findNode(id); if (!node) return "";
     // A readable outline is the clipboard interchange format, not executable HTML.
     const lines = [];
-    const walk = (n, depth) => { lines.push("  ".repeat(depth) + "- " + outlineNodeLine(n)); (n.children || []).forEach(c => walk(c, depth + 1)); };
+    const walk = (n, depth) => { lines.push("  ".repeat(depth) + "- " + outlineNodeLine(n, false)); (n.children || []).forEach(c => walk(c, depth + 1)); };
     walk(node, 0);
     const text = lines.join("\n");
     this.clipboardBranchSnapshot = {
@@ -2450,6 +2494,7 @@ class CrispMindCanvas {
     const clone = JSON.parse(JSON.stringify(node, (key, value) => MIND_GEOMETRY_KEYS.has(key) ? undefined : value));
     const walk = current => {
       current.id = generateUid();
+      if (current.data) delete current.data.blockId;
       (current.children || []).forEach(walk);
     };
     walk(clone);
@@ -2469,7 +2514,7 @@ class CrispMindCanvas {
         if (++count > 1000) return false;
         const indent = line.match(/^\s*/)[0].replace(/\t/g, "  ").length;
         const label = line.trim().replace(/^(?:[-*+] |\d+[.)] |#{1,6} )/, "").trim(); if (!label) continue;
-        const split = splitOutlineImage(label);
+        const split = splitOutlineImage(splitOutlineBlockId(label).text);
         const node = {id: generateUid(), data: {text: normalizeMindLinkText(split.text, this.options.vaultName)}, children: []};
         if (split.image) node.data.image = split.image;
         while (stack.length > 1 && stack[stack.length - 1].indent >= indent) stack.pop();
@@ -4458,6 +4503,51 @@ class CrispMindEditView extends TextFileView {
     this.canvasController.resetZoom();
     this.renderOutline();
     this.renderInspector();
+    this.applyPendingSubpath();
+  }
+
+  // [[map#^id]] opens here with eState.subpath; it can arrive before the file data is loaded.
+  setEphemeralState(state) {
+    super.setEphemeralState?.(state);
+    if (typeof state?.subpath === "string" && state.subpath.includes("^")) {
+      this.pendingSubpath = state.subpath;
+      this.applyPendingSubpath();
+    }
+  }
+
+  applyPendingSubpath() {
+    const c = this.canvasController, subpath = this.pendingSubpath;
+    if (!c || c.destroyed || !subpath) return;
+    this.pendingSubpath = null;
+    if (this.leaf) MIND_PENDING_SUBPATHS.delete(this.leaf);
+    const id = mindBlockIdNodeId(c.docData.root, subpath);
+    if (!id) return;
+    c.selectNode(id, true);
+    c.centerOnNode(id);
+    this.handleSelectionChange();
+  }
+
+  writeClipboard(text) {
+    return (this.containerEl?.win || window).navigator.clipboard.writeText(text);
+  }
+
+  async copyNodeLink(nodeId) {
+    const c = this.canvasController, node = c?.findNode(nodeId);
+    if (!node || !this.file) return;
+    const isRoot = node.id === c.docData.root.id;
+    if (!isRoot && !node.data.blockId) {
+      if (this.readOnly || c.options?.readOnly) { new Notice("只读状态下不能新建节点链接"); return; }
+      const blockId = newMindBlockId(c.docData.root);
+      if (!c.transact(() => { node.data.blockId = blockId; })) { new Notice("节点链接创建失败"); return; }
+    }
+    const target = this.app.metadataCache.fileToLinktext(this.file, "");
+    const linked = mindNodeLink(node.data.text || "", this.app.vault.getName());
+    const label = outlineNodeText(linked ? linked.display : node.data.text).replace(/^\[[ xX]\]\s+/, "").replace(/[\[\]|#^]/g, " ").replace(/\s+/g, " ").trim();
+    const link = `[[${target}${isRoot ? "" : `#^${node.data.blockId}`}${label ? `|${label}` : ""}]]`;
+    try {
+      await this.writeClipboard(link);
+      new Notice("节点链接已复制");
+    } catch (error) { new Notice(`剪贴板操作失败：${error.message}`); }
   }
 
   updateBranchBar(node, path) {
@@ -5045,6 +5135,7 @@ class CrispMindEditView extends TextFileView {
     menu.addItem(i => i.setTitle(summary ? "编辑概要" : "添加概要").setIcon("panel-top-dashed").onClick(() => this.promptSummary(node, summary)));
     if (c.selectedNodeIds.size === 2) menu.addItem(i => i.setTitle("为选中节点建立关系").setIcon("git-branch").onClick(() => this.promptRelation(c.selectedNodes())));
     menu.addItem(i => i.setTitle("设置 / 更换笔记链接").setIcon("link").onClick(() => this.editNodeLink(node.id)));
+    menu.addItem(i => i.setTitle("复制节点链接").setIcon("link-2").onClick(() => { void this.copyNodeLink(node.id); }));
     menu.addItem(i => i.setTitle(node.data?.image ? "更换图片…" : "插入图片…").setIcon("image-plus").onClick(() => this.pickImage(node.id)));
     if (node.data?.image) {
       if (this.imageFile(node.data.image.path)) menu.addItem(i => i.setTitle("查看大图").setIcon("maximize-2").onClick(() => this.openImagePreview(node.data.image.path)));
@@ -5087,6 +5178,10 @@ class CrispMindEditView extends TextFileView {
     }
     if (node.data?.image && this.imageFile(node.data.image.path)) {
       menu.addItem(i => i.setTitle("查看大图").setIcon("maximize-2").onClick(() => this.openImagePreview(node.data.image.path)));
+    }
+    // Read-only views can share a link that already exists, but never write a new block id.
+    if (node.data?.blockId || node.id === c.docData?.root?.id) {
+      menu.addItem(i => i.setTitle("复制节点链接").setIcon("link-2").onClick(() => { void this.copyNodeLink(node.id); }));
     }
     if (node.children?.length) {
       menu.addItem(i => i.setTitle(c.isNodeExpanded(node) ? "折叠分支 · F" : "展开分支 · F")
@@ -6375,6 +6470,17 @@ class CrispMindPlugin extends Plugin {
     );
 
     // file-open only fires for the active leaf; layout-change also catches maps opened in background tabs.
+    // [[map#^id]] opens the file in a Markdown leaf first; record the subpath so the switch keeps it.
+    const leafProto = obsidian.WorkspaceLeaf?.prototype;
+    if (typeof leafProto?.openFile === "function") {
+      const plugin = this, originalOpenFile = leafProto.openFile;
+      const openFile = function (file, openState) {
+        try { plugin.rememberMindSubpath(this, file, openState); } catch (_) {}
+        return originalOpenFile.apply(this, arguments);
+      };
+      leafProto.openFile = openFile;
+      this.register(() => { if (leafProto.openFile === openFile) leafProto.openFile = originalOpenFile; });
+    }
     this.registerEvent(this.app.workspace.on("file-open", () => this.convertMindLeaves()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.convertMindLeaves()));
 
@@ -6423,8 +6529,18 @@ class CrispMindPlugin extends Plugin {
     for (const leaf of workspace?.getLeavesOfType?.("markdown") || []) {
       const path = leaf.view?.file?.path;
       if (!path || !path.endsWith(".mind.md") || MIND_MARKDOWN_LEAVES.get(leaf) === path) continue;
-      void leaf.setViewState({ type: VIEW_TYPE_CRISP_MIND, state: { file: path }, active: workspace.activeLeaf === leaf });
+      // Kept until the mind view applies it: layout-change can convert the same leaf twice in a row.
+      const pending = MIND_PENDING_SUBPATHS.get(leaf);
+      const subpath = pending && pending.path === path && Date.now() - pending.at < 10000 ? pending.subpath : null;
+      void leaf.setViewState({ type: VIEW_TYPE_CRISP_MIND, state: { file: path }, active: workspace.activeLeaf === leaf }, subpath ? { subpath } : undefined);
     }
+  }
+
+  rememberMindSubpath(leaf, file, openState) {
+    const subpath = openState?.eState?.subpath;
+    if (!leaf || !file?.path?.endsWith(".mind.md")) return;
+    if (typeof subpath === "string" && subpath.includes("^")) MIND_PENDING_SUBPATHS.set(leaf, { path: file.path, subpath, at: Date.now() });
+    else MIND_PENDING_SUBPATHS.delete(leaf);
   }
 
   refreshLicenseViews() {
