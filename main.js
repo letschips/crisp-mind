@@ -1032,9 +1032,95 @@ function inspectMindSource(raw) {
   } catch (error) { return `导图数据损坏：${error.message}`; }
 }
 
-// After an image is renamed, Obsidian rewrites the outline embed but cannot see the JSON block.
-// Report node -> new link target only when that is the sole difference; anything else stays a conflict.
-function mindImageRelinks(raw) {
+function tokenizeMindWikiLinks(text) {
+  const parts = [];
+  const source = String(text || "");
+  const re = /(!?\[\[[^\]\r\n]+\]\])/g;
+  let last = 0, match;
+  while ((match = re.exec(source)) !== null) {
+    if (match.index > last) parts.push({ type: "text", value: source.slice(last, match.index) });
+    const raw = match[1];
+    const embed = raw.startsWith("!");
+    const inner = raw.slice(embed ? 3 : 2, -2);
+    const pipeIdx = inner.indexOf("|");
+    const target = (pipeIdx < 0 ? inner : inner.slice(0, pipeIdx)).trim();
+    const alias = pipeIdx < 0 ? null : inner.slice(pipeIdx + 1);
+    const hashIdx = target.indexOf("#");
+    const filePart = (hashIdx < 0 ? target : target.slice(0, hashIdx)).trim();
+    const subpath = hashIdx < 0 ? "" : target.slice(hashIdx);
+    parts.push({ type: "link", raw, embed, filePart, subpath, alias });
+    last = re.lastIndex;
+  }
+  if (last < source.length) parts.push({ type: "text", value: source.slice(last) });
+  return parts;
+}
+
+function mindLinkDisplayNames(targetOrFile) {
+  const names = new Set();
+  const add = value => {
+    if (typeof value !== "string" || !value) return;
+    const fileName = value.split("/").pop();
+    if (!fileName) return;
+    names.add(fileName);
+    names.add(fileName.replace(/\.md$/i, ""));
+    names.add(fileName.replace(/\.[A-Za-z][A-Za-z0-9]{0,9}$/, ""));
+  };
+  if (typeof targetOrFile === "string") add(targetOrFile);
+  else if (targetOrFile && typeof targetOrFile === "object") {
+    add(targetOrFile.basename);
+    add(targetOrFile.name);
+    add(targetOrFile.path);
+  }
+  return names;
+}
+
+function diffMindNodeLinks(savedText, outlineText) {
+  if (savedText === outlineText) return [];
+  const aParts = tokenizeMindWikiLinks(savedText);
+  const bParts = tokenizeMindWikiLinks(outlineText);
+  if (aParts.length !== bParts.length) return null;
+  const relinks = [];
+  let linkIdx = 0;
+  for (let i = 0; i < aParts.length; i++) {
+    const a = aParts[i], b = bParts[i];
+    if (a.type !== b.type) return null;
+    if (a.type === "text") {
+      if (a.value !== b.value) return null;
+      continue;
+    }
+    const tokenIndex = linkIdx++;
+    if (a.raw === b.raw) continue;
+    if (a.embed !== b.embed || !a.filePart || !b.filePart || a.subpath !== b.subpath) return null;
+    if (a.filePart === b.filePart) return null;
+    const aliasOk = a.alias === b.alias || (
+      a.alias !== null &&
+      mindLinkDisplayNames(a.filePart).has(a.alias) &&
+      (b.alias === null || mindLinkDisplayNames(b.filePart).has(b.alias))
+    );
+    if (!aliasOk) return null;
+    relinks.push({
+      tokenIndex,
+      target: b.filePart,
+      newRaw: b.raw,
+      aliasChanged: a.alias !== b.alias,
+      newAlias: b.alias
+    });
+  }
+  return relinks;
+}
+
+function replaceMindWikiLinks(text, replacements) {
+  let linkIdx = 0;
+  return tokenizeMindWikiLinks(text).map(part => {
+    if (part.type !== "link") return part.value;
+    const replacement = replacements.get(linkIdx++);
+    return replacement ?? part.raw;
+  }).join("");
+}
+
+// After an image or linked note is renamed, Obsidian rewrites the outline link but cannot see the JSON block.
+// Report node relinks only when renamed embeds or wikilinks are the sole difference; anything else stays a conflict.
+function mindOutlineRelinks(raw) {
   try {
     const start = "<!-- CRISP-MIND-DATA-START -->", end = "<!-- CRISP-MIND-DATA-END -->";
     if (typeof raw !== "string" || !raw.includes(start) || !raw.includes(end)) return null;
@@ -1042,6 +1128,7 @@ function mindImageRelinks(raw) {
     const match = block.match(/^\s*```crisp-mind\s*\n([\s\S]*?)\n```\s*$/);
     if (!match) return null;
     const data = JSON.parse(match[1]);
+    if (raw.slice(raw.lastIndexOf(end) + end.length).trim()) return null;
     const body = raw.slice(0, raw.indexOf(start)).replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
     const flatten = root => {
       const rows = [];
@@ -1051,20 +1138,38 @@ function mindImageRelinks(raw) {
     };
     const saved = flatten(data.root), outline = flatten(markdownOutlineToTree(body));
     if (saved.length !== outline.length) return null;
-    const relinks = [];
+    const images = [], links = [];
     for (let i = 0; i < saved.length; i++) {
       const a = saved[i], b = outline[i];
       if (a.depth !== b.depth) return null;
-      if (outlineNodeText(a.n?.data?.text).trim() !== outlineNodeText(b.n?.data?.text).trim()) return null;
+      const savedBlockId = a.depth > 0 && typeof a.n?.data?.blockId === "string" && MIND_BLOCK_ID_RE.test(a.n.data.blockId) ? a.n.data.blockId : null;
+      const outlineBlockId = b.depth > 0 && typeof b.n?.data?.blockId === "string" && MIND_BLOCK_ID_RE.test(b.n.data.blockId) ? b.n.data.blockId : null;
+      if (savedBlockId !== outlineBlockId) return null;
+      const linkDiffs = diffMindNodeLinks(outlineNodeText(a.n?.data?.text).trim(), outlineNodeText(b.n?.data?.text).trim());
+      if (!linkDiffs) return null;
+      if (linkDiffs.length) {
+        if (typeof a.n.id !== "string") return null;
+        for (const diff of linkDiffs) links.push({ nodeId: a.n.id, ...diff });
+      }
       const savedImage = normalizeMindImage(a.n?.data?.image), outlineImage = normalizeMindImage(b.n?.data?.image);
       if (!savedImage !== !outlineImage) return null;
       if (savedImage && savedImage.path !== outlineImage.path) {
         if (typeof a.n.id !== "string") return null;
-        relinks.push({ nodeId: a.n.id, target: outlineImage.path });
+        images.push({ nodeId: a.n.id, target: outlineImage.path });
       }
     }
-    return relinks.length ? relinks : null;
+    return images.length || links.length ? { images, links } : null;
   } catch (_) { return null; }
+}
+
+function mindImageRelinks(raw) {
+  const relinks = mindOutlineRelinks(raw);
+  return relinks && relinks.images.length && !relinks.links.length ? relinks.images : null;
+}
+
+function mindLinkRelinks(raw) {
+  const relinks = mindOutlineRelinks(raw);
+  return relinks && relinks.links.length ? relinks.links : null;
 }
 
 function assembleMindMarkdown(mindDoc) {
@@ -4125,14 +4230,14 @@ class CrispMindEditView extends TextFileView {
     } catch (_) {
       this.mindDoc = parseMindMarkdown("");
     }
-    let healedImages = false;
+    let healedKind = null;
     if (this.sourceWarning && !isFatalCorrupt && !this.baseReadOnly && !this.locked) {
-      const healed = this.healRenamedImages(data);
+      const healed = this.healRenamedLinks(data);
       if (healed) {
-        this.mindDoc = healed;
+        this.mindDoc = healed.doc;
         this.sourceWarning = null;
         this.readOnly = false;
-        healedImages = true;
+        healedKind = healed;
       }
     }
     if (this.canvasController) {
@@ -4144,16 +4249,19 @@ class CrispMindEditView extends TextFileView {
       return;
     }
     this.initViewUI();
-    if (healedImages) {
+    if (healedKind) {
       // The outline already points at the renamed file; write the JSON block to match.
       this.dirty = true;
-      this.setSaveState("图片已改名，正在同步导图");
+      const msg = healedKind.hasImages && healedKind.hasLinks
+        ? "图片与链接已更新，正在同步导图"
+        : healedKind.hasLinks ? "链接已更新，正在同步导图" : "图片已改名，正在同步导图";
+      this.setSaveState(msg);
       this.requestSave();
     }
   }
 
-  healRenamedImages(data) {
-    const relinks = mindImageRelinks(data);
+  healRenamedLinks(data) {
+    const relinks = mindOutlineRelinks(data);
     if (!relinks) return null;
     let doc;
     try { doc = parseMindMarkdown(data); } catch (_) { return null; }
@@ -4163,14 +4271,34 @@ class CrispMindEditView extends TextFileView {
       for (const c of n.children || []) { const hit = find(c, id); if (hit) return hit; }
       return null;
     };
-    for (const { nodeId, target } of relinks) {
+    const sourcePath = this.file?.path || "";
+    for (const { nodeId, target } of relinks.images) {
       const node = find(doc.data.root, nodeId);
-      const file = this.app?.metadataCache?.getFirstLinkpathDest?.(target, this.file?.path || "");
+      const file = this.app?.metadataCache?.getFirstLinkpathDest?.(target, sourcePath);
       if (!node?.data?.image || !file?.path || !isMindImagePath(file.path)) return null;
       node.data.image = normalizeMindImage({ ...node.data.image, path: file.path });
       if (!node.data.image) return null;
     }
-    return doc;
+    const linkUpdatesByNode = new Map();
+    for (const item of relinks.links) {
+      const node = find(doc.data.root, item.nodeId);
+      const file = this.app?.metadataCache?.getFirstLinkpathDest?.(item.target, sourcePath);
+      if (!node?.data || typeof node.data.text !== "string" || !file?.path) return null;
+      if (item.aliasChanged && item.newAlias !== null && !mindLinkDisplayNames(file).has(item.newAlias)) return null;
+      let perNode = linkUpdatesByNode.get(item.nodeId);
+      if (!perNode) { perNode = new Map(); linkUpdatesByNode.set(item.nodeId, perNode); }
+      perNode.set(item.tokenIndex, item.newRaw);
+    }
+    for (const [nodeId, updates] of linkUpdatesByNode) {
+      const node = find(doc.data.root, nodeId);
+      if (!node) return null;
+      node.data.text = replaceMindWikiLinks(node.data.text, updates);
+    }
+    return { doc, hasImages: relinks.images.length > 0, hasLinks: relinks.links.length > 0 };
+  }
+
+  healRenamedImages(data) {
+    return this.healRenamedLinks(data)?.doc || null;
   }
 
   setSaveState(message, error = false) {

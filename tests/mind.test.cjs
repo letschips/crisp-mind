@@ -138,7 +138,7 @@ function setupTestContext(publicKeyPem, overrides = {}) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindEmbedHeight: typeof mindEmbedHeight === \"undefined\" ? undefined : mindEmbedHeight, CrispMindEmbed: typeof CrispMindEmbed === \"undefined\" ? undefined : CrispMindEmbed, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, mindLinkRelinks: typeof mindLinkRelinks === \"undefined\" ? undefined : mindLinkRelinks, mindOutlineRelinks: typeof mindOutlineRelinks === \"undefined\" ? undefined : mindOutlineRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindEmbedHeight: typeof mindEmbedHeight === \"undefined\" ? undefined : mindEmbedHeight, CrispMindEmbed: typeof CrispMindEmbed === \"undefined\" ? undefined : CrispMindEmbed, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -1936,6 +1936,137 @@ test("an unresolvable renamed image stays read-only and is not rewritten", () =>
   v.setViewData(raw, true);
   assert.equal(v.readOnly, true);
   assert.ok(v.sourceWarning);
+});
+
+function noteLinkDoc(helpers, text, extraChildren = []) {
+  const doc = helpers.parseMindMarkdown("# Root\n- Plain");
+  doc.data.root.children.unshift({ id: "link-node", data: { text }, children: [] });
+  for (const child of extraChildren) doc.data.root.children.push(child);
+  return doc;
+}
+
+test("a renamed linked note makes the outline differ only in the wikilink and is reported as relinkable", () => {
+  const { helpers } = setupTestContext();
+  const raw = helpers.assembleMindMarkdown(
+    noteLinkDoc(helpers, "[[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]")
+  );
+  const renamed = raw.replace(
+    "- [[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]",
+    "- [[ANKS 与 Crisp 展示文档演示|ANKS 与 Crisp 展示文档演示]]"
+  );
+  assert.ok(helpers.inspectMindSource(renamed), "still flagged by strict source check");
+  assert.equal(helpers.mindImageRelinks(renamed), null, "not an image relink");
+  const relinks = JSON.parse(JSON.stringify(helpers.mindLinkRelinks(renamed)));
+  assert.equal(relinks.length, 1);
+  assert.equal(relinks[0].nodeId, "link-node");
+  assert.equal(relinks[0].target, "ANKS 与 Crisp 展示文档演示");
+  assert.equal(helpers.mindLinkRelinks(raw), null, "nothing to relink when consistent");
+  // Real outline edits, added/removed links, subpath edits, or manual alias rewrites stay conflicts.
+  assert.equal(helpers.mindLinkRelinks(renamed.replace("- Plain", "- Plain edited")), null);
+  assert.equal(helpers.mindLinkRelinks(raw.replace("- Plain", "- Plain [[Extra]]")), null);
+  assert.equal(helpers.mindLinkRelinks(raw.replace(
+    "- [[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]",
+    "- Removed link"
+  )), null);
+  assert.equal(helpers.mindLinkRelinks(raw.replace(
+    "- [[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]",
+    "- [[ANKS 与 Crisp 展示文档演示|被人手改过的别名]]"
+  )), null);
+});
+
+test("opening a renamed-note map heals the JSON wikilink and saves instead of going read-only", () => {
+  const { helpers } = setupTestContext();
+  const doc = noteLinkDoc(
+    helpers,
+    "[[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]",
+    [
+      { id: "custom-alias", data: { text: "参考 [[dir/OldNote#Sec 1|自定义名称]] 说明" }, children: [] },
+      { id: "bare-link", data: { text: "[ ] 阅读 [[OldBare]]" }, children: [] },
+      { id: "multi-line", data: { text: "第一行\n[[MultiOld|MultiOld]]" }, children: [] },
+      { id: "img-node", data: { text: "配图 [[OldBare]]", image: { path: "附件/旧图.png", width: 400, height: 300 } }, children: [] },
+      { id: "two-links", data: { text: "对比 [[OldBare|OldBare]] 与 ![[SubOld]] 以及 [[dir/OldMap.mind.md#^k1|OldMap.mind]]" }, children: [] }
+    ]
+  );
+  const full = helpers.assembleMindMarkdown(doc);
+  const splitAt = full.indexOf("<!-- CRISP-MIND-DATA-START -->");
+  const outlinePart = full.slice(0, splitAt)
+    .replace(
+      "- [[Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档|ANKS 与 Crisp 展示文档]]",
+      "- [[ANKS 与 Crisp 展示文档演示|ANKS 与 Crisp 展示文档演示]]"
+    )
+    .replace("- 参考 [[dir/OldNote#Sec 1|自定义名称]] 说明", "- 参考 [[NewNote#Sec 1|自定义名称]] 说明")
+    .replace(/\[\[OldBare\|OldBare\]\]/g, "[[NewBare|NewBare]]")
+    .replace(/\[\[OldBare\]\]/g, "[[NewBare]]")
+    .replace("![[SubOld]]", "![[SubNew]]")
+    .replace("[[dir/OldMap.mind.md#^k1|OldMap.mind]]", "[[NewMap.mind.md#^k1|NewMap.mind]]")
+    .replace("[[MultiOld|MultiOld]]", "[[MultiNew|MultiNew]]")
+    .replace("![[附件/旧图.png]]", "![[新图.png]]");
+  const raw = outlinePart + full.slice(splitAt);
+
+  const resolved = {
+    "ANKS 与 Crisp 展示文档演示": { path: "Topics/self-media/outputs/visualizations/ANKS 与 Crisp 展示文档演示.md", basename: "ANKS 与 Crisp 展示文档演示", name: "ANKS 与 Crisp 展示文档演示.md" },
+    "NewNote": { path: "Notes/NewNote.md", basename: "NewNote", name: "NewNote.md" },
+    "NewBare": { path: "NewBare.md", basename: "NewBare", name: "NewBare.md" },
+    "SubNew": { path: "SubNew.md", basename: "SubNew", name: "SubNew.md" },
+    "NewMap.mind.md": { path: "Maps/NewMap.mind.md", basename: "NewMap.mind", name: "NewMap.mind.md" },
+    "MultiNew": { path: "MultiNew.md", basename: "MultiNew", name: "MultiNew.md" },
+    "新图.png": { path: "附件/新图.png", extension: "png" }
+  };
+  const v = Object.create(helpers.CrispMindEditView.prototype);
+  let saves = 0;
+  v.file = { path: "Maps/a.mind.md" };
+  v.plugin = helpers.entitle({});
+  v.app = { metadataCache: { getFirstLinkpathDest: (target) => resolved[target] || null } };
+  v.initViewUI = () => {};
+  v.requestSave = () => { saves++; };
+  v.setSaveState = () => {};
+  v.setViewData(raw, true);
+
+  assert.equal(v.readOnly, false);
+  assert.equal(v.sourceWarning, null);
+  const byId = id => v.mindDoc.data.root.children.find(c => c.id === id);
+  assert.equal(byId("link-node").data.text, "[[ANKS 与 Crisp 展示文档演示|ANKS 与 Crisp 展示文档演示]]");
+  assert.equal(byId("custom-alias").data.text, "参考 [[NewNote#Sec 1|自定义名称]] 说明");
+  assert.equal(byId("bare-link").data.text, "[ ] 阅读 [[NewBare]]");
+  assert.equal(byId("multi-line").data.text, "第一行\n[[MultiNew|MultiNew]]", "multiline hard breaks survive");
+  assert.equal(byId("img-node").data.text, "配图 [[NewBare]]");
+  assert.equal(byId("img-node").data.image.path, "附件/新图.png");
+  assert.equal(byId("two-links").data.text, "对比 [[NewBare|NewBare]] 与 ![[SubNew]] 以及 [[NewMap.mind.md#^k1|NewMap.mind]]");
+  assert.equal(v.dirty, true);
+  assert.equal(saves, 1);
+  assert.equal(helpers.inspectMindSource(helpers.assembleMindMarkdown(v.mindDoc)), null);
+});
+
+test("an unresolvable or tampered wikilink diff stays read-only and is not rewritten", () => {
+  const { helpers } = setupTestContext();
+  const base = helpers.assembleMindMarkdown(noteLinkDoc(helpers, "[[Old|Old]]"));
+  const outlineOnly = (text, fn) => {
+    const idx = text.indexOf("<!-- CRISP-MIND-DATA-START -->");
+    return fn(text.slice(0, idx)) + text.slice(idx);
+  };
+  const h1Base = helpers.assembleMindMarkdown(noteLinkDoc(helpers, "[[Old#H1|Old]]"));
+  const cases = [
+    outlineOnly(base, s => s.replace("[[Old|Old]]", "[[Missing|Missing]]")),
+    outlineOnly(base, s => s.replace("[[Old|Old]]", "[[Existing|NotMatchingBasename]]")),
+    outlineOnly(base, s => s.replace("[[Old|Old]]", "[[Old|ManualAliasChange]]")),
+    outlineOnly(base, s => s.replace("[[Old|Old]]", "![[Existing|Existing]]")),
+    outlineOnly(h1Base, s => s.replace("[[Old#H1|Old]]", "[[Existing#H2|Existing]]"))
+  ];
+  for (const raw of cases) {
+    const v = Object.create(helpers.CrispMindEditView.prototype);
+    v.file = { path: "Maps/a.mind.md" };
+    v.plugin = helpers.entitle({});
+    v.app = {
+      metadataCache: {
+        getFirstLinkpathDest: (target) => target === "Existing" ? { path: "Existing.md", basename: "Existing", name: "Existing.md" } : null
+      }
+    };
+    v.initViewUI = () => {};
+    v.requestSave = () => { throw new Error("must not save"); };
+    v.setViewData(raw, true);
+    assert.equal(v.readOnly, true);
+    assert.ok(v.sourceWarning);
+  }
 });
 
 test("image nodes grow to fit the picture and keep geometry out of the file", () => {
