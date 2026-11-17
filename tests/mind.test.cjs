@@ -2404,6 +2404,18 @@ test("1.9 a verifier that accepts everything at load time disables activation", 
   assert.equal(helpers.mindEntitled(plugin), false);
 });
 
+test("a code for another Crisp plugin cannot unlock Mind by rewriting the manager's pluginId", async () => {
+  const { helpers } = setupTestContext(licensePublicPem);
+  const plugin = { app: {}, settings: {} };
+  const manager = helpers.mindLicenseManagerFor(plugin);
+  manager.pluginId = "crisp-pulse";
+  const pulseOnly = makeLicenseCode({ features: ["crisp-pulse"] });
+  assert.equal((await manager.activate(pulseOnly)).valid, false);
+  plugin.settings.licenseCode = pulseOnly;
+  assert.equal((await manager.validateCurrentLicense({ online: false })).valid, false);
+  assert.equal(helpers.mindEntitled(plugin), false);
+});
+
 // ---- Node block links (1.10.0) ----
 test("node block id round-trips through the outline and keeps the label clean", () => {
   const { helpers } = setupTestContext();

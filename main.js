@@ -337,11 +337,12 @@ function applyMindLicenseResult(manager, result) {
   return manager.status;
 }
 
+// The product id is a constant, not an instance field: rewriting a field must not let a code
+// issued for another Crisp plugin pass as a Mind license.
 class CrispMindLicenseManager {
   constructor(app, settings) {
     this.app = app;
     this.settings = settings;
-    this.pluginId = "crisp-mind";
     this.status = { valid: false, reason: "尚未激活" };
     this.checkId = 0;
     MIND_LICENSE_STATE.set(this, false);
@@ -358,7 +359,7 @@ class CrispMindLicenseManager {
   async validateCurrentLicense(options = {}) {
     const id = ++this.checkId;
     const code = (this.settings?.licenseCode || "").trim();
-    const result = code ? await verifyLicenseCode(code, this.pluginId, this.app, null, options) : { valid: false, reason: "未输入授权码" };
+    const result = code ? await verifyLicenseCode(code, "crisp-mind", this.app, null, options) : { valid: false, reason: "未输入授权码" };
     if (id !== this.checkId) return this.status;
     if (result.valid && result.source === "online" && this.settings) this.settings.licenseLastOnlineAt = Date.now();
     return applyMindLicenseResult(this, result);
@@ -367,7 +368,7 @@ class CrispMindLicenseManager {
   async activate(code) {
     const id = ++this.checkId;
     const trimmed = (code || "").trim();
-    const result = trimmed ? await verifyLicenseCode(trimmed, this.pluginId, this.app) : { valid: false, reason: "授权码为空" };
+    const result = trimmed ? await verifyLicenseCode(trimmed, "crisp-mind", this.app) : { valid: false, reason: "授权码为空" };
     if (id !== this.checkId) return this.status;
     if (result.valid && this.settings) {
       this.settings.licenseCode = trimmed;
@@ -4617,7 +4618,7 @@ class CrispMindEditView extends TextFileView {
     this.renderToolbar();
     this.saveStatusEl = container.createDiv({cls:"crisp-mind-save-status"});
     this.saveStatusEl.setAttribute("role", "status");
-    const licensed = this.isLicensed();
+    const licensed = mindEntitled(this.plugin);
     this.setSaveState(
       this.sourceWarning || (this.readOnly ? (licensed ? "只读大纲预览" : "未激活 · 只读预览") : "已保存"),
       !!this.sourceWarning
