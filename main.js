@@ -46,14 +46,6 @@ const CRISP_MIND_SVG = `<svg class="crisp-mind-brand-icon" viewBox="0 0 75 75" x
       <stop offset="72%" stop-color="#334155" />
       <stop offset="90%" stop-color="#ffffff" />
       <stop offset="100%" stop-color="#cbd5e1" />
-      <animateTransform 
-        attributeName="gradientTransform" 
-        type="rotate" 
-        from="0 37.5 37.5" 
-        to="360 37.5 37.5" 
-        dur="6s" 
-        repeatCount="indefinite" 
-      />
     </linearGradient>
     <filter id="crisp-mind-flare-glow" x="-30%" y="-30%" width="160%" height="160%">
       <feGaussianBlur stdDeviation="1.5" result="blur" />
@@ -65,7 +57,6 @@ const CRISP_MIND_SVG = `<svg class="crisp-mind-brand-icon" viewBox="0 0 75 75" x
   </defs>
   <path fill="url(#crisp-mind-chrome-flow)" stroke="currentColor" stroke-width="0.8" stroke-opacity="0.3" fill-rule="evenodd" d="M37.964 37.212s2.384-17.2 9.323-27.643a15.7 15.7 0 0 1 2.971-4.283c5.6-5.751 14.42-6.246 19.7-1.105 5.28 5.14 5.02 13.97-.58 19.721a16 16 0 0 1-2.45 2.057c-9.954 8.098-28.964 11.253-28.964 11.253m-1.517 1.362s-17.13 2.844-27.383 10.059a15.7 15.7 0 0 0-4.202 3.085c-5.6 5.751-5.86 14.58-.58 19.721s14.1 4.646 19.7-1.105a16 16 0 0 0 1.991-2.506c7.828-10.167 10.474-29.254 10.474-29.254M8.943 27.818c10.442 6.939 27.642 9.323 27.642 9.323S33.43 18.131 25.332 8.178a16 16 0 0 0-2.057-2.452C17.524.126 8.695-.132 3.554 5.148s-4.646 14.099 1.105 19.699a15.7 15.7 0 0 0 4.284 2.971M37.78 38.59s17.2 2.385 27.642 9.323a15.7 15.7 0 0 1 4.284 2.972c5.751 5.6 6.246 14.42 1.105 19.699-5.14 5.28-13.97 5.02-19.721-.579a16 16 0 0 1-2.057-2.451C40.937 57.6 37.78 38.59 37.78 38.59" clip-rule="evenodd"/>
   <g filter="url(#crisp-mind-flare-glow)">
-    <animate attributeName="opacity" values="0.75;1;0.75" dur="3s" repeatCount="indefinite" />
     <ellipse cx="37.134" cy="37.88" fill="#ffffff" rx=".834" ry="21.087"/>
     <ellipse cx="37.015" cy="37.879" fill="#ffffff" rx=".834" ry="21.087" transform="rotate(-90 37.015 37.88)"/>
     <circle cx="37.08" cy="37.88" r="2.2" fill="#ffffff" />

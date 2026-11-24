@@ -142,8 +142,17 @@ function setupTestContext(publicKeyPem, overrides = {}) {
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
+  context.module.exports.brandIcon = vm.runInNewContext("CRISP_MIND_SVG", context);
   return context.module.exports;
 }
+
+test("The shared brand icon keeps its gradient and glow without scheduling SVG animation", () => {
+  const { brandIcon } = setupTestContext();
+  assert.match(brandIcon, /<linearGradient\b/);
+  assert.match(brandIcon, /<feGaussianBlur\b/);
+  assert.match(brandIcon, /<path\b/);
+  assert.doesNotMatch(brandIcon, /<(?:animate\w*|set)\b/);
+});
 
 test("1. Markdown Outline to Tree conversion", () => {
   const { helpers } = setupTestContext();
