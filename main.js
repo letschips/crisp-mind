@@ -157,12 +157,23 @@ function mindSubtleTrusted(subtle) {
   return MIND_SUBTLE_CHECKS.get(subtle);
 }
 
+/**
+ * Chat apps mangle long codes when they are copied: line breaks, spaces (incl. full-width/NBSP),
+ * zero-width characters, and surrounding text such as "卡密：…。". Returns the bare code.
+ */
+function normalizeLicenseCode(input) {
+  if (typeof input !== "string") return "";
+  const compact = input.replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, "");
+  const match = compact.match(/[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/);
+  return match ? match[0] : compact;
+}
+
 async function verifyLicenseCode(licenseCode, targetPluginId = "crisp-mind", app = null, windowObj = null, options = {}) {
   if (typeof targetPluginId === "object" && targetPluginId !== null && !app) {
     windowObj = targetPluginId;
     targetPluginId = "crisp-mind";
   }
-  const trimmed = (licenseCode || "").trim();
+  const trimmed = normalizeLicenseCode(licenseCode);
   if (!trimmed || !trimmed.includes(".")) {
     return { valid: false, reason: "授权码格式无效（须包含 payload 与签名）" };
   }
@@ -349,7 +360,7 @@ class CrispMindLicenseManager {
 
   async validateCurrentLicense(options = {}) {
     const id = ++this.checkId;
-    const code = (this.settings?.licenseCode || "").trim();
+    const code = normalizeLicenseCode(this.settings?.licenseCode);
     const result = code ? await verifyLicenseCode(code, "crisp-mind", this.app, null, options) : { valid: false, reason: "未输入授权码" };
     if (id !== this.checkId) return this.status;
     if (result.valid && result.source === "online" && this.settings) this.settings.licenseLastOnlineAt = Date.now();
@@ -358,7 +369,7 @@ class CrispMindLicenseManager {
 
   async activate(code) {
     const id = ++this.checkId;
-    const trimmed = (code || "").trim();
+    const trimmed = normalizeLicenseCode(code);
     const result = trimmed ? await verifyLicenseCode(trimmed, "crisp-mind", this.app) : { valid: false, reason: "授权码为空" };
     if (id !== this.checkId) return this.status;
     if (result.valid && this.settings) {
@@ -398,7 +409,7 @@ function collectVaultCrispLicenseCandidates(app) {
   const candidates = [];
   const add = (code) => {
     if (typeof code !== "string") return;
-    const trimmed = code.trim();
+    const trimmed = normalizeLicenseCode(code);
     if (!trimmed.includes(".") || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);

@@ -130,6 +130,11 @@ function setupTestContext(publicKeyPem, overrides = {}) {
     ...overrides
   };
 
+  if (typeof overrides.requestUrl === "function") {
+    const baseRequire = context.require;
+    context.require = (mod) => (mod === "obsidian" ? { ...baseRequire(mod), requestUrl: overrides.requestUrl } : baseRequire(mod));
+  }
+
   const mainPath = path.join(__dirname, "../main.js");
   let source = fs.readFileSync(mainPath, "utf8");
   // Swap in a locally generated key so license fixtures can be signed in the test.
@@ -138,7 +143,7 @@ function setupTestContext(publicKeyPem, overrides = {}) {
     source = source.replace(/-----BEGIN PUBLIC KEY-----[\s\S]*?-----END PUBLIC KEY-----/, publicKeyPem.trim());
   }
   const code = source +
-    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, mindLinkRelinks: typeof mindLinkRelinks === \"undefined\" ? undefined : mindLinkRelinks, mindOutlineRelinks: typeof mindOutlineRelinks === \"undefined\" ? undefined : mindOutlineRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindEmbedHeight: typeof mindEmbedHeight === \"undefined\" ? undefined : mindEmbedHeight, CrispMindEmbed: typeof CrispMindEmbed === \"undefined\" ? undefined : CrispMindEmbed, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
+    "\nmodule.exports.helpers = { inlineEditorFrame, normalizeMindLinkText, mindNodeLink, inspectMindSource, searchMindNodes, normalizePresentationSteps, normalizeNodeStyle, normalizeMindAnnotations, createBranchColorMap, sampleCubicBezierPoints, taperedPathFromPoints, relationRouteIntersectsNodes, findOrthogonalRelationRoute, roundedOrthogonalPath, findRelationLabelPosition, getDescendantTaskProgress, createTaskProgressMap, CrispMindCanvas, CrispMindEditView, parseMindMarkdown, assembleMindMarkdown, markdownOutlineToTree, treeToMarkdownOutline, validateAndRepairTree, extractNodeToTopicContent, getComputedThemeConfig, normalizeLicenseCode, verifyLicenseCode, discoverVaultCrispLicense, collectVaultCrispLicenseCandidates, CrispMindLicenseManager, renderAboutCard, CrispMindExporter, CrispMindPromptModal, CrispMindSearchModal, clipboardImagePaths: typeof clipboardImagePaths === \"undefined\" ? undefined : clipboardImagePaths, noteMarkdownForPreview: typeof noteMarkdownForPreview === \"undefined\" ? undefined : noteMarkdownForPreview, normalizeMindImage: typeof normalizeMindImage === \"undefined\" ? undefined : normalizeMindImage, splitOutlineImage: typeof splitOutlineImage === \"undefined\" ? undefined : splitOutlineImage, mindImageBox: typeof mindImageBox === \"undefined\" ? undefined : mindImageBox, mindImageRelinks: typeof mindImageRelinks === \"undefined\" ? undefined : mindImageRelinks, mindLinkRelinks: typeof mindLinkRelinks === \"undefined\" ? undefined : mindLinkRelinks, mindOutlineRelinks: typeof mindOutlineRelinks === \"undefined\" ? undefined : mindOutlineRelinks, inlineSvgImages: typeof inlineSvgImages === \"undefined\" ? undefined : inlineSvgImages, exportTargetPath: typeof exportTargetPath === \"undefined\" ? undefined : exportTargetPath, exportBackgroundColor: typeof exportBackgroundColor === \"undefined\" ? undefined : exportBackgroundColor, snapshotSourceKey: typeof snapshotSourceKey === \"undefined\" ? undefined : snapshotSourceKey, MIND_SNAPSHOT_LIMIT: typeof MIND_SNAPSHOT_LIMIT === \"undefined\" ? undefined : MIND_SNAPSHOT_LIMIT, mindEntitled: typeof mindEntitled === \"undefined\" ? undefined : mindEntitled, splitOutlineBlockId: typeof splitOutlineBlockId === \"undefined\" ? undefined : splitOutlineBlockId, mindEmbedHeight: typeof mindEmbedHeight === \"undefined\" ? undefined : mindEmbedHeight, CrispMindEmbed: typeof CrispMindEmbed === \"undefined\" ? undefined : CrispMindEmbed, mindBlockIdNodeId: typeof mindBlockIdNodeId === \"undefined\" ? undefined : mindBlockIdNodeId, mindOutlineIsLossless: typeof mindOutlineIsLossless === \"undefined\" ? undefined : mindOutlineIsLossless, mindLicenseManagerFor: typeof mindLicenseManagerFor === \"undefined\" ? undefined : mindLicenseManagerFor, entitle: (p, on = true) => { const m = mindLicenseManagerFor(p); MIND_LICENSE_STATE.set(m, !!on); MIND_LICENSE_EXPIRY.delete(m); return p; } };";
 
   vm.runInNewContext(code, context);
   context.module.exports.testMenus = testMenus;
@@ -1146,6 +1151,56 @@ test('40e. inheritance adopts nothing when no candidate covers Crisp Mind', asyn
     'crisp-pulse': { settings: { licenseCode: makeLicenseCode({ features: ['crisp-asr'] }) } },
   } } };
   assert.equal(await helpers.discoverVaultCrispLicense(app), null);
+});
+
+function mangleCode(c) {
+  const mid = Math.floor(c.length / 2);
+  return `${c.slice(0, 10)}\n${c.slice(10, 30)}\r\n${c.slice(30, 50)} ${c.slice(50, 70)}\u3000${c.slice(70, 90)}\u200b${c.slice(90, mid)}\u00a0${c.slice(mid)}`;
+}
+
+test('40f. pasted code with line breaks, spaces, full-width spaces and zero-width chars verifies like the clean code', async () => {
+  const { helpers } = setupTestContext(licensePublicPem);
+  const good = makeLicenseCode();
+  assert.equal(helpers.normalizeLicenseCode(mangleCode(good)), good);
+  const res = await helpers.verifyLicenseCode(mangleCode(good), 'crisp-mind', {}, null, { online: false });
+  assert.equal(res.valid, true, res.reason);
+});
+
+test('40g. code wrapped in surrounding text is accepted; the clean code is saved and sent to the server', async () => {
+  const good = makeLicenseCode();
+  for (const pasted of [`卡密：${good}。`, `${good}\n复制卡密发送给买家`]) {
+    const bodies = [];
+    const requestUrl = async (req) => { bodies.push(JSON.parse(req.body)); return { status: 200, json: { valid: true, message: 'ok' } }; };
+    const { helpers } = setupTestContext(licensePublicPem, { requestUrl });
+    const settings = { licenseCode: '' };
+    const manager = new helpers.CrispMindLicenseManager({}, settings);
+    const res = await manager.activate(pasted);
+    assert.equal(res.valid, true, res.reason);
+    assert.equal(settings.licenseCode, good);
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].licenseCode, good);
+  }
+});
+
+test('40h. garbage and empty input stay invalid with the same reasons; a clean code is unchanged', async () => {
+  const { helpers } = setupTestContext(licensePublicPem);
+  const good = makeLicenseCode();
+  assert.equal(helpers.normalizeLicenseCode(good), good);
+  assert.equal(helpers.normalizeLicenseCode(undefined), '');
+  assert.match((await helpers.verifyLicenseCode('', 'crisp-mind', {}, null, { online: false })).reason, /授权码格式无效/);
+  assert.match((await helpers.verifyLicenseCode(' \n\u200b', 'crisp-mind', {}, null, { online: false })).reason, /授权码格式无效/);
+  assert.match((await helpers.verifyLicenseCode('随便一段文字', 'crisp-mind', {}, null, { online: false })).reason, /授权码格式无效/);
+  const settings = { licenseCode: '' };
+  const manager = new helpers.CrispMindLicenseManager({}, settings);
+  assert.match((await manager.activate('  \n')).reason, /授权码为空/);
+  assert.equal(settings.licenseCode, '');
+});
+
+test('40i. sibling candidate scan normalizes pasted-looking codes', () => {
+  const { helpers } = setupTestContext(licensePublicPem);
+  const good = makeLicenseCode();
+  const app = { plugins: { plugins: { 'crisp-pulse': { settings: { licenseCode: `卡密：\n${good}\n` } } } } };
+  assert.deepEqual([...helpers.collectVaultCrispLicenseCandidates(app)], [good]);
 });
 
 test('41. Completed tasks [x] receive task styling and strikethrough', () => {
