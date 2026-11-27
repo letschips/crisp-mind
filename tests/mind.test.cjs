@@ -2687,3 +2687,21 @@ test("fitting an embedded map uses its own small insets", () => {
   canvas.resetZoom();
   assert.equal(canvas.scale, 1);
 });
+
+// Tempo saves `licenseKey` at the top level; Pets and Days keep their settings under `options`.
+test("40j. candidate scan reads Tempo's licenseKey on disk and a loaded sibling's options", (t) => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { helpers } = setupTestContext(licensePublicPem);
+  const tempo = makeLicenseCode({ licenseId: 'TEMPO' });
+  const pets = makeLicenseCode({ licenseId: 'PETS' });
+  const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'mind-inherit-'));
+  t.after(() => fs.rmSync(basePath, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(basePath, '.obsidian', 'plugins', 'crisp-tempo'), { recursive: true });
+  fs.writeFileSync(path.join(basePath, '.obsidian', 'plugins', 'crisp-tempo', 'data.json'), JSON.stringify({ licenseKey: tempo }));
+  const app = { vault: { configDir: '.obsidian', adapter: { basePath } }, plugins: { plugins: {} } };
+  assert.deepEqual([...helpers.collectVaultCrispLicenseCandidates(app)], [tempo]);
+  app.plugins.plugins['crisp-focus'] = { options: { licenseCode: pets } };
+  assert.deepEqual([...helpers.collectVaultCrispLicenseCandidates(app)], [pets, tempo]);
+});

@@ -418,7 +418,10 @@ function collectVaultCrispLicenseCandidates(app) {
   // Loaded plugins first: their settings are already parsed in memory.
   for (const pid of CRISP_SIBLING_PLUGIN_IDS) {
     if (pid === "crisp-mind") continue;
-    add(app.plugins?.plugins?.[pid]?.settings?.licenseCode);
+    const sibling = app.plugins?.plugins?.[pid];
+    add(sibling?.settings?.licenseCode);
+    add(sibling?.options?.licenseCode);
+    add(sibling?.licenseKey);
   }
 
   // Then on-disk data.json, which also covers plugins that are installed but not loaded.
@@ -436,7 +439,9 @@ function collectVaultCrispLicenseCandidates(app) {
           if (!fsMod.existsSync(dataPath)) continue;
           try {
             const data = JSON.parse(fsMod.readFileSync(dataPath, "utf8"));
-            add(data?.licenseCode || data?.settings?.licenseCode);
+            add(data?.licenseCode || data?.licenseKey || data?.license);
+            // Crisp Pulse keeps its settings nested under `settings`.
+            add(data?.settings?.licenseCode || data?.settings?.licenseKey);
           } catch (e) {}
         }
       }
